@@ -299,10 +299,16 @@ version = "0.1.0"
 source = { editable = "packages/agent-runtime" }
 dependencies = [
     { name = "praxis-core" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "praxis-core", editable = "packages/core" }]
+requires-dist = [
+    { name = "praxis-core", editable = "packages/core" },
+    { name = "pydantic", specifier = ">=2.8,<3.0" },
+    { name = "pyyaml", specifier = ">=6.0,<7.0" },
+]
 
 [[package]]
 name = "praxis-api"
@@ -345,11 +351,17 @@ name = "praxis-core"
 version = "0.1.0"
 source = { editable = "packages/core" }
 dependencies = [
+    { name = "httpx" },
     { name = "pydantic" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pydantic", specifier = ">=2.8,<3.0" }]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "pydantic", specifier = ">=2.8,<3.0" },
+    { name = "pyyaml", specifier = ">=6.0,<7.0" },
+]
 
 [[package]]
 name = "praxis-integrations"
