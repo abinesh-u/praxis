@@ -1,11 +1,12 @@
 from fastapi.testclient import TestClient
-
 from praxis_api.main import app
 
 client = TestClient(app)
 
 
-def test_health_check() -> None:
+def test_health():
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "service": "praxis-api"}
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["service"] == "praxis-api"

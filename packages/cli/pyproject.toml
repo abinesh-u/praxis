@@ -3,14 +3,22 @@ name = "praxis-cli"
 version = "0.1.0"
 description = "Local-first command-line interface for Praxis"
 requires-python = ">=3.11"
-dependencies = ["typer>=0.12,<1.0", "httpx>=0.27,<1.0"]
+dependencies = [
+    "typer>=0.12,<1.0",
+    "httpx>=0.27,<1.0",
+    "praxis-core",
+]
 
 [project.scripts]
 praxis = "praxis_cli.main:app"
 
-[dependency-groups]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.ruff]
-line-length = 100
-target-version = "py311"
+[tool.hatch.build.targets.wheel]
+packages = ["src/praxis_cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

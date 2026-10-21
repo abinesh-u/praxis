@@ -1,6 +1,10 @@
 import typer
 
-app = typer.Typer(name="praxis", help="Praxis — turn commitments into completed work.", no_args_is_help=True)
+app = typer.Typer(
+    name="praxis",
+    help="Praxis — turn commitments into completed work.",
+    no_args_is_help=True,
+)
 
 
 @app.command()
