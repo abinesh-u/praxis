@@ -119,6 +119,10 @@ class JsonTaskRepository(TaskRepository):
             scheduled_raw = raw.get("scheduled_date")
             due_raw = raw.get("due_date")
             is_in_progress = status == TaskStatus.IN_PROGRESS.value
+            is_deferred = status == TaskStatus.DEFERRED.value
+            is_awaiting_approval = status == TaskStatus.AWAITING_APPROVAL.value
+            is_failed = status == TaskStatus.FAILED.value
+            is_unscheduled = scheduled_raw is None and due_raw is None
 
             sched_due = (
                 datetime.fromisoformat(scheduled_raw).date() <= date_only
@@ -127,7 +131,15 @@ class JsonTaskRepository(TaskRepository):
             )
             dead_due = datetime.fromisoformat(due_raw).date() <= date_only if due_raw else False
 
-            if sched_due or dead_due or is_in_progress:
+            if (
+                sched_due
+                or dead_due
+                or is_in_progress
+                or is_deferred
+                or is_awaiting_approval
+                or is_failed
+                or is_unscheduled
+            ):
                 result.append(Task.model_validate(raw))
         return result
 

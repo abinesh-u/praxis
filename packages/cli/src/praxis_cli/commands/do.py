@@ -75,7 +75,7 @@ async def _do(
                 )
                 raise typer.Exit(1)
 
-        runner = LocalCliAgentRunner(force_retry=force_retry)
+        runner = LocalCliAgentRunner(uow=uow, force_retry=force_retry)
         use_case = make_execute_next_action_use_case(cfg, runner)
 
         cmd = ExecuteNextActionCommand(

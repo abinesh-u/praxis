@@ -5,12 +5,13 @@ from __future__ import annotations
 import os
 from uuid import UUID
 
-from praxis_core.entities.approval import ActionSpecification
+from praxis_core.entities.approval import ActionSpecification, ApprovalStatus
 from praxis_core.entities.common import ActionRiskLevel
 from praxis_core.entities.evidence import Evidence
 from praxis_core.entities.next_action import NextAction
 from praxis_core.entities.task import Task
 from praxis_core.ports.agent_runner import AgentRunner, AgentRunOutcome
+from praxis_core.ports.unit_of_work import UnitOfWork
 
 # Tools or hints classified as consequential requiring approval
 CONSEQUENTIAL_KEYWORDS = {
@@ -30,7 +31,8 @@ CONSEQUENTIAL_KEYWORDS = {
 class LocalCliAgentRunner(AgentRunner):
     """Local-first AgentRunner with risk detection and approval gating."""
 
-    def __init__(self, force_retry: bool = False) -> None:
+    def __init__(self, uow: UnitOfWork | None = None, force_retry: bool = False) -> None:
+        self.uow = uow
         self.force_retry = force_retry
 
     async def execute_action(
@@ -53,6 +55,29 @@ class LocalCliAgentRunner(AgentRunner):
         )
 
         if is_consequential:
+            # Check if approval was granted
+            if self.uow and hasattr(self.uow.approvals, "_approvals"):
+                has_approved = any(
+                    raw.get("task_id") == str(task.id)
+                    and raw.get("owner_id") == owner_id
+                    and raw.get("status") == ApprovalStatus.APPROVED.value
+                    for raw in self.uow.approvals._approvals.values()
+                )
+                if has_approved:
+                    evidence = Evidence.human_confirmed(
+                        target_task_id=task.id,
+                        user_identity=f"cli:{owner_id}",
+                        confirmation_note=(
+                            f"Action '{action.description}' executed with authorized approval."
+                        ),
+                        target_action_id=action.id,
+                    )
+                    return AgentRunOutcome(
+                        status="completed",
+                        evidence=evidence,
+                        output=f"Successfully executed authorized action: {action.description}",
+                    )
+
             action_spec = ActionSpecification(
                 tool_name=action.tool_hint or "system_action",
                 canonical_args=action.tool_args_hint or {"target": action.description},
