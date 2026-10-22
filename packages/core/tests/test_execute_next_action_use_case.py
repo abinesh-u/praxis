@@ -1,0 +1,223 @@
+"""Unit tests for ExecuteNextActionUseCase."""
+
+import pytest
+from praxis_core.entities.approval import ActionSpecification
+from praxis_core.entities.common import (
+    DependencyType,
+    EvidenceSource,
+    TaskStatus,
+    VerificationStatus,
+)
+from praxis_core.entities.evidence import Evidence
+from praxis_core.entities.task import Task
+from praxis_core.errors import BlockedTaskError
+from praxis_core.ports.agent_runner import AgentRunner, AgentRunOutcome
+from praxis_core.ports.unit_of_work import InMemoryUnitOfWork
+from praxis_core.use_cases.execute_next_action import (
+    ExecuteNextActionCommand,
+    ExecuteNextActionUseCase,
+)
+
+
+class MockAgentRunner(AgentRunner):
+    """Configurable mock runner for testing execution orchestrations."""
+
+    def __init__(self, outcome: AgentRunOutcome | None = None) -> None:
+        self.outcome = outcome or AgentRunOutcome(status="completed")
+        self.invocations: list[dict] = []
+
+    async def execute_action(
+        self,
+        attempt_id,
+        task,
+        action,
+        owner_id,
+        workspace_root=None,
+    ) -> AgentRunOutcome:
+        self.invocations.append(
+            {
+                "attempt_id": attempt_id,
+                "task_id": task.id,
+                "action_id": action.id,
+                "owner_id": owner_id,
+            }
+        )
+        return self.outcome
+
+
+class TestExecuteNextActionUseCase:
+    """Verifies pre-execution persistence, runner coordination, and outcome reconciliation."""
+
+    @pytest.mark.anyio
+    async def test_blocked_task_raises_error_without_calling_runner(self):
+        uow = InMemoryUnitOfWork()
+        runner = MockAgentRunner()
+        use_case = ExecuteNextActionUseCase(uow=uow, runner=runner)
+
+        prereq = Task(owner_id="user_1", title="Prereq")
+        task = Task(owner_id="user_1", title="Dependent")
+        task.add_dependency(prereq.id, DependencyType.BLOCKS)
+
+        async with uow:
+            await uow.tasks.save(prereq)
+            await uow.tasks.save(task)
+            await uow.commit()
+
+        cmd = ExecuteNextActionCommand(task_id=task.id, owner_id="user_1")
+        with pytest.raises(BlockedTaskError):
+            await use_case.execute(cmd)
+
+        # Invariant: runner was never invoked
+        assert len(runner.invocations) == 0
+
+    @pytest.mark.anyio
+    async def test_consequential_action_pauses_for_approval(self):
+        uow = InMemoryUnitOfWork()
+        task = Task(owner_id="user_1", title="Deploy app")
+        task.add_next_action("Delete stale build artifacts")
+
+        action_spec = ActionSpecification(
+            tool_name="workspace_fs.rm",
+            canonical_args={"path": "/build/dist"},
+            task_id=task.id,
+        )
+        outcome = AgentRunOutcome(
+            status="awaiting_approval",
+            action_spec=action_spec,
+            approval_justification="Destructive file removal requires authorization",
+        )
+        runner = MockAgentRunner(outcome=outcome)
+        use_case = ExecuteNextActionUseCase(uow=uow, runner=runner)
+
+        async with uow:
+            await uow.tasks.save(task)
+            await uow.commit()
+
+        cmd = ExecuteNextActionCommand(task_id=task.id, owner_id="user_1")
+        result = await use_case.execute(cmd)
+
+        assert result.task.status == TaskStatus.AWAITING_APPROVAL
+        assert result.approval_request is not None
+        assert result.approval_request.action.tool_name == "workspace_fs.rm"
+        assert result.attempt.status == "awaiting_approval"
+        assert result.attempt.approval_id == result.approval_request.id
+
+    @pytest.mark.anyio
+    async def test_completed_with_evidence_completes_action_and_task(self):
+        uow = InMemoryUnitOfWork()
+        task = Task(owner_id="user_1", title="Backup database")
+        action = task.add_next_action("Export pg_dump to file")
+
+        evidence = Evidence.machine_verified(
+            target_task_id=task.id,
+            target_action_id=action.id,
+            verifier_identity="tool:pg_dump",
+            details={"dump_size_bytes": 1048576},
+        )
+        outcome = AgentRunOutcome(
+            status="completed",
+            evidence=evidence,
+        )
+        runner = MockAgentRunner(outcome=outcome)
+        use_case = ExecuteNextActionUseCase(uow=uow, runner=runner)
+
+        async with uow:
+            await uow.tasks.save(task)
+            await uow.commit()
+
+        cmd = ExecuteNextActionCommand(task_id=task.id, owner_id="user_1")
+        result = await use_case.execute(cmd)
+
+        assert result.action.completed is True
+        assert result.action.evidence_id == evidence.id
+        assert result.task.status == TaskStatus.COMPLETED
+        assert result.attempt.status == "completed"
+
+    @pytest.mark.anyio
+    async def test_completed_without_evidence_fails_task_and_attempt(self):
+        """Invariant: An agent claiming completed without evidence triggers recovery failure."""
+        uow = InMemoryUnitOfWork()
+        task = Task(owner_id="user_1", title="Audit logs")
+        task.add_next_action("Parse log events")
+
+        unverified = Evidence(
+            source=EvidenceSource.TOOL,
+            verification_status=VerificationStatus.UNVERIFIED_ASSERTION,
+            verifier_identity="unverified_agent",
+            target_task_id=task.id,
+            details={},
+        )
+        outcome = AgentRunOutcome(
+            status="completed",
+            evidence=unverified,
+        )
+        runner = MockAgentRunner(outcome=outcome)
+        use_case = ExecuteNextActionUseCase(uow=uow, runner=runner)
+
+        async with uow:
+            await uow.tasks.save(task)
+            await uow.commit()
+
+        cmd = ExecuteNextActionCommand(task_id=task.id, owner_id="user_1")
+        result = await use_case.execute(cmd)
+
+        # Invariant: Not completed! Fails with recovery suggestion
+        assert result.task.status == TaskStatus.FAILED
+        assert result.attempt.status == "failed"
+        assert result.task.recovery_suggestion is not None
+
+    @pytest.mark.anyio
+    async def test_execute_next_action_idempotency_prevents_duplicate_tool_calls(self):
+        uow = InMemoryUnitOfWork()
+        task = Task(owner_id="user_1", title="Export analytics")
+        action = task.add_next_action("Run export script")
+
+        evidence = Evidence.machine_verified(
+            target_task_id=task.id,
+            target_action_id=action.id,
+            verifier_identity="tool:exporter",
+            details={"rows": 500},
+        )
+        outcome = AgentRunOutcome(status="completed", evidence=evidence)
+        runner = MockAgentRunner(outcome=outcome)
+        use_case = ExecuteNextActionUseCase(uow=uow, runner=runner)
+
+        async with uow:
+            await uow.tasks.save(task)
+            await uow.commit()
+
+        cmd = ExecuteNextActionCommand(
+            task_id=task.id,
+            owner_id="user_1",
+            idempotency_key="export_job_001",
+        )
+
+        first_res = await use_case.execute(cmd)
+        assert len(runner.invocations) == 1
+
+        # Second call with same idempotency key
+        second_res = await use_case.execute(cmd)
+        # Invariant: Runner was NOT invoked a second time!
+        assert len(runner.invocations) == 1
+        assert second_res.attempt.id == first_res.attempt.id
+
+    @pytest.mark.anyio
+    async def test_execute_next_action_fails_when_task_awaiting_approval(self):
+        uow = InMemoryUnitOfWork()
+        task = Task(owner_id="user_1", title="Critical task")
+        task.start()
+        task.await_approval(reason="Requires human approval")
+
+        async with uow:
+            await uow.tasks.save(task)
+            await uow.commit()
+
+        runner = MockAgentRunner()
+        use_case = ExecuteNextActionUseCase(uow=uow, runner=runner)
+
+        cmd = ExecuteNextActionCommand(task_id=task.id, owner_id="user_1")
+        with pytest.raises(Exception) as exc_info:
+            await use_case.execute(cmd)
+
+        assert "awaiting_approval" in str(exc_info.value)
+        assert len(runner.invocations) == 0
