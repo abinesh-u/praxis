@@ -334,3 +334,8 @@ A change is done when:
 -   Documentation/configuration is updated where necessary.
 -   The final summary accurately distinguishes implemented behavior from
     planned work.
+
+## 15. Deferred tasks and reminders
+
+-   **Model Settings API & Frontend Web UI:** The model configuration subsystem is implemented in the core/backend package first (`packages/core/src/praxis_core/models`). The corresponding FastAPI endpoints (`/api/models`) and Next.js Model Settings UI (`/settings/models`) are intentionally deferred to a later phase.
+

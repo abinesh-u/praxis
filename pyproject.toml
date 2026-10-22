@@ -43,4 +43,5 @@ testpaths = [
     "services/api/tests",
     "packages/core/tests",
     "packages/cli/tests",
+    "packages/agent-runtime/tests",
 ]
