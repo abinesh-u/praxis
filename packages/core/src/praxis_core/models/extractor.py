@@ -105,6 +105,8 @@ class NebiusTaskExtractor(TaskExtractor):
                     raw_response = await self.mock_provider(messages)
                 else:
                     raw_response = str(self.mock_provider)
+            elif not self.api_key:
+                return self._deterministic_fallback(clean_text)
             else:
                 router = self.router or ModelRouter(registry=ModelRegistry())
                 model_config = router.resolve_model_for_profile(self.profile.value)
@@ -112,8 +114,7 @@ class NebiusTaskExtractor(TaskExtractor):
                     config=model_config,
                     api_key=self.api_key,
                 )
-                response = await adapter.chat(messages, model_config=model_config)
-                raw_response = response.content
+                raw_response = adapter.chat(messages)
         except Exception as exc:
             logger.warning("Extraction model inference failed: %s. Using fallback.", exc)
             return self._deterministic_fallback(clean_text)
