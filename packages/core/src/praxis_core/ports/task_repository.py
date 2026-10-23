@@ -81,8 +81,20 @@ class InMemoryTaskRepository:
             scheduled_due = task.scheduled_date and task.scheduled_date.date() <= date_only
             deadline_due = task.due_date and task.due_date.date() <= date_only
             in_progress = task.status == TaskStatus.IN_PROGRESS
+            is_deferred = task.status == TaskStatus.DEFERRED
+            is_awaiting_approval = task.status == TaskStatus.AWAITING_APPROVAL
+            is_failed = task.status == TaskStatus.FAILED
+            is_unscheduled = task.scheduled_date is None and task.due_date is None
 
-            if scheduled_due or deadline_due or in_progress:
+            if (
+                scheduled_due
+                or deadline_due
+                or in_progress
+                or is_deferred
+                or is_awaiting_approval
+                or is_failed
+                or is_unscheduled
+            ):
                 result.append(task.model_copy(deep=True))
         return result
 

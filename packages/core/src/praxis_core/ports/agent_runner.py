@@ -16,13 +16,14 @@ from praxis_core.entities.task import Task
 class AgentRunOutcome(BaseModel):
     """Normalized outcome returned from executing an agent action."""
 
-    status: str  # "completed", "awaiting_approval", "failed"
+    status: str  # "completed", "awaiting_approval", "outcome_unknown", "failed"
     evidence: Evidence | None = None
     action_spec: ActionSpecification | None = None
     action_fingerprint: str | None = None
     approval_justification: str | None = None
     output: Any = None
     error: str | None = None
+    provider_request_id: str | None = None
 
 
 class AgentRunner(Protocol):
@@ -35,6 +36,19 @@ class AgentRunner(Protocol):
         action: NextAction,
         owner_id: str,
         workspace_root: str | None = None,
+        approval_token: str | None = None,
     ) -> AgentRunOutcome:
         """Execute a single next action through the bounded agent loop."""
+        ...
+
+    async def reconcile_action(
+        self,
+        attempt_id: UUID,
+        task: Task,
+        action: NextAction,
+        owner_id: str,
+        provider_request_id: str | None,
+        idempotency_key: str,
+    ) -> AgentRunOutcome:
+        """Observe an uncertain provider operation without dispatching it again."""
         ...
