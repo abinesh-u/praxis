@@ -339,3 +339,65 @@ A change is done when:
 
 -   **Model Settings API & Frontend Web UI:** The model configuration subsystem is implemented in the core/backend package first (`packages/core/src/praxis_core/models`). The corresponding FastAPI endpoints (`/api/models`) and Next.js Model Settings UI (`/settings/models`) are intentionally deferred to a later phase.
 
+## 16. Implemented execution contract
+
+The current durable vertical slice includes a SQLite-backed FastAPI API,
+trusted bearer-token identity, exact approval binding, and a bounded
+`webhook_post` adapter. Preserve these invariants when changing it:
+
+-   `POST /tasks/{task_id}/execute` creates and persists an execution attempt
+    before dispatching an external request.
+-   The idempotency key and action arguments remain bound to that attempt;
+    retries must not silently create a second side effect.
+-   Webhook actions require an approved, single-use token bound to the exact
+    action fingerprint. Reconciliation never consumes approval again.
+-   Only a provider response with `status: completed` is confirmed evidence.
+    Malformed, oversized, timed-out, transport-error, pending, or ambiguous
+    responses remain `outcome_unknown`.
+-   A provider `status: failed` is authoritative only with
+    `failure_final: true` and documented semantics that the action did not
+    occur or that any partial effect is explicitly represented.
+-   `POST /tasks/{task_id}/reconcile` performs a provider status read only. It
+    must never dispatch the original POST again. Concurrent reconciliation must
+    not overwrite a newer terminal attempt state.
+-   Provider operation IDs are untrusted input. Keep them constrained before
+    constructing status URLs, and never allow them to select arbitrary hosts or
+    schemes.
+
+The provider contract requires documented idempotency-key retention and
+duplicate-request behavior, an operation ID or equivalent lookup handle, and
+authoritative status semantics. A missing operation ID cannot be used to build
+an ambiguous status lookup.
+
+## 17. Outbound HTTP deployment security
+
+The webhook adapter validates schemes, rejects URL credentials, blocks
+localhost/private/link-local destinations, supports exact host allowlisting,
+disables redirects, validates all resolved IPv4/IPv6 addresses, and enforces a
+streaming response-size limit. These are application-level defenses, not a
+complete network boundary.
+
+Production deployments must add network-level egress restrictions or a
+controlled resolver/transport that prevents DNS time-of-check/time-of-use
+divergence. Do not expose arbitrary webhook URLs to untrusted callers, and do
+not forward secrets across origins. Keep `PRAXIS_WEBHOOK_ALLOWED_HOSTS` and
+status-provider configuration explicit and reviewed.
+
+## 18. Verification expectations for execution changes
+
+Execution changes require tests for both normal and adversarial lifecycle
+paths:
+
+-   approval replay, action-argument tampering, owner mismatch, and attempt/task
+    mismatch;
+-   duplicate execution and concurrent reconciliation;
+-   provider timeout after acceptance, malformed or oversized responses,
+    pending status, authoritative failure, and missing operation IDs;
+-   process restart with durable attempt, provider ID, idempotency key, audit
+    state, and recovery guidance intact;
+-   controlled provider behavior proving one POST followed by read-only GET
+    reconciliation and no second POST.
+
+Run the full configured suite plus Ruff and `git diff --check` before handing
+off. The API tests use `httpx.AsyncClient` with `ASGITransport`; do not
+reintroduce Starlette's deprecated synchronous `TestClient` path.

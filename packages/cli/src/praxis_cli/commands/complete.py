@@ -9,6 +9,7 @@ import typer
 from praxis_core.entities.evidence import Evidence
 from praxis_core.use_cases import CompleteTaskCommand
 
+from praxis_cli.api_client import PraxisApiClient
 from praxis_cli.config import resolve_config
 from praxis_cli.render import console, render_error, short_id
 from praxis_cli.wiring import get_uow, make_complete_use_case, resolve_task_by_short_id
@@ -27,14 +28,34 @@ def complete(
         str | None,
         typer.Option("--profile", "-p", help="Target profile"),
     ] = None,
+    api: Annotated[
+        bool,
+        typer.Option("--api", help="Use the shared API instead of local JSON storage"),
+    ] = False,
 ) -> None:
     """Explicitly mark a task complete with recorded verification evidence."""
-    asyncio.run(_complete(task_id, note, profile))
+    asyncio.run(_complete(task_id, note, profile, api))
 
 
-async def _complete(task_id_str: str, note: str | None, profile: str | None) -> None:
+async def _complete(
+    task_id_str: str, note: str | None, profile: str | None, api: bool = False
+) -> None:
     try:
         cfg = resolve_config(profile_override=profile)
+        if api:
+            with PraxisApiClient(cfg.api_url) as client:
+                completed = client.complete_task(
+                    task_id_str,
+                    owner_id=cfg.profile,
+                    note=note,
+                )
+            console.print(
+                f"\n[bold green3]✔ Task {completed['id']} marked COMPLETED via API.[/bold green3]"
+            )
+            console.print(
+                f"  Evidence: {note or 'Verified completion by user via CLI.'}\n", style="grey62"
+            )
+            return
         uow = get_uow(cfg)
 
         async with uow:

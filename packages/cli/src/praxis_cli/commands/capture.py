@@ -9,8 +9,9 @@ import typer
 from praxis_core.entities.common import SourceChannel
 from praxis_core.use_cases import CaptureCommitmentCommand
 
+from praxis_cli.api_client import PraxisApiClient
 from praxis_cli.config import resolve_config
-from praxis_cli.render import render_capture_result, render_error
+from praxis_cli.render import console, render_capture_result, render_error
 from praxis_cli.wiring import make_capture_use_case
 
 
@@ -31,9 +32,13 @@ def capture(
         str | None,
         typer.Option("--key", "-k", help="Idempotency key for safe retries"),
     ] = None,
+    api: Annotated[
+        bool,
+        typer.Option("--api", help="Use the shared API instead of local JSON storage"),
+    ] = False,
 ) -> None:
     """Capture a natural-language commitment into a structured task with a next action."""
-    asyncio.run(_capture(text, profile, timezone, key))
+    asyncio.run(_capture(text, profile, timezone, key, api))
 
 
 async def _capture(
@@ -41,9 +46,29 @@ async def _capture(
     profile: str | None,
     timezone: str | None,
     key: str | None,
+    api: bool,
 ) -> None:
     try:
         cfg = resolve_config(profile_override=profile, tz_override=timezone)
+        if api:
+            with PraxisApiClient(cfg.api_url) as client:
+                result = client.capture(
+                    owner_id=cfg.profile,
+                    raw_text=text,
+                    source=SourceChannel.CLI.value,
+                    timezone=cfg.timezone,
+                    idempotency_key=key,
+                )
+            task = result.get("task")
+            if task is None:
+                console.print(f"\nClarification needed: {result.get('clarification_prompt')}\n")
+            else:
+                console.print("\n[bold green3]✔ Captured via Praxis API.[/bold green3]")
+                console.print(f"  Task:        {task.get('title')}")
+                console.print(f"  ID:          {task.get('id')}")
+                action = task.get("current_next_action") or {}
+                console.print(f"  Next action: {action.get('description', '')}\n")
+            return
         use_case = make_capture_use_case(cfg)
         cmd = CaptureCommitmentCommand(
             owner_id=cfg.profile,

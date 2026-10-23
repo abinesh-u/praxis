@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 PROFILE_NAME_REGEX = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 DEFAULT_PRAXIS_DIR = Path.home() / ".praxis"
+DEFAULT_PRAXIS_API_URL = "http://localhost:8000"
 
 
 class ConfigError(Exception):
@@ -33,6 +34,34 @@ class CliConfig:
     store_path: Path
     timezone: str
     praxis_dir: Path
+    api_url: str
+
+
+def resolve_api_url(api_url_override: str | None = None) -> str:
+    """Resolve the API base URL without allowing malformed endpoint configuration.
+
+    The CLI remains local-first for now, but API-backed workflows use this
+    value as their single configuration point. A trailing slash is removed so
+    client route construction remains predictable.
+    """
+    if api_url_override is not None:
+        raw_value = api_url_override
+    else:
+        env_value = os.getenv("PRAXIS_API_URL")
+        raw_value = env_value if env_value is not None else DEFAULT_PRAXIS_API_URL
+    candidate = raw_value.strip()
+    if not candidate:
+        raise ConfigError("PRAXIS_API_URL must not be empty.")
+
+    from urllib.parse import urlparse
+
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ConfigError("PRAXIS_API_URL must be an absolute http(s) URL.")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ConfigError("PRAXIS_API_URL must not include credentials, a query, or a fragment.")
+
+    return candidate.rstrip("/")
 
 
 def validate_profile_name(name: str) -> str:
@@ -102,6 +131,7 @@ def resolve_config(
             store_path=store_path_override,
             timezone=tz,
             praxis_dir=praxis_dir,
+            api_url=resolve_api_url(),
         )
 
     env_store = os.getenv("PRAXIS_STORE_PATH")
@@ -114,6 +144,7 @@ def resolve_config(
             store_path=Path(env_store),
             timezone=tz,
             praxis_dir=praxis_dir,
+            api_url=resolve_api_url(),
         )
 
     # 1. CLI option
@@ -140,6 +171,7 @@ def resolve_config(
         store_path=store_path,
         timezone=tz,
         praxis_dir=praxis_dir,
+        api_url=resolve_api_url(),
     )
 
 

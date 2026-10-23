@@ -1,8 +1,9 @@
 """Unit tests for ExecuteNextActionUseCase."""
 
 import pytest
-from praxis_core.entities.approval import ActionSpecification
+from praxis_core.entities.approval import ActionSpecification, ApprovalRequest
 from praxis_core.entities.common import (
+    ActionRiskLevel,
     DependencyType,
     EvidenceSource,
     TaskStatus,
@@ -10,12 +11,16 @@ from praxis_core.entities.common import (
 )
 from praxis_core.entities.evidence import Evidence
 from praxis_core.entities.task import Task
-from praxis_core.errors import BlockedTaskError
+from praxis_core.errors import BlockedTaskError, InvalidApprovalError
 from praxis_core.ports.agent_runner import AgentRunner, AgentRunOutcome
 from praxis_core.ports.unit_of_work import InMemoryUnitOfWork
 from praxis_core.use_cases.execute_next_action import (
     ExecuteNextActionCommand,
     ExecuteNextActionUseCase,
+)
+from praxis_core.use_cases.reconcile_execution import (
+    ReconcileExecutionCommand,
+    ReconcileExecutionUseCase,
 )
 
 
@@ -25,6 +30,7 @@ class MockAgentRunner(AgentRunner):
     def __init__(self, outcome: AgentRunOutcome | None = None) -> None:
         self.outcome = outcome or AgentRunOutcome(status="completed")
         self.invocations: list[dict] = []
+        self.reconciliation_outcome = AgentRunOutcome(status="outcome_unknown")
 
     async def execute_action(
         self,
@@ -33,6 +39,7 @@ class MockAgentRunner(AgentRunner):
         action,
         owner_id,
         workspace_root=None,
+        approval_token=None,
     ) -> AgentRunOutcome:
         self.invocations.append(
             {
@@ -43,6 +50,17 @@ class MockAgentRunner(AgentRunner):
             }
         )
         return self.outcome
+
+    async def reconcile_action(
+        self,
+        attempt_id,
+        task,
+        action,
+        owner_id,
+        provider_request_id,
+        idempotency_key,
+    ) -> AgentRunOutcome:
+        return self.reconciliation_outcome
 
 
 class TestExecuteNextActionUseCase:
@@ -202,6 +220,67 @@ class TestExecuteNextActionUseCase:
         assert second_res.attempt.id == first_res.attempt.id
 
     @pytest.mark.anyio
+    async def test_uncertain_outcome_is_durable_and_never_retries_implicitly(self):
+        uow = InMemoryUnitOfWork()
+        task = Task(owner_id="user_1", title="Notify provider")
+        task.add_next_action("Send provider notification", tool_hint="webhook_post")
+        runner = MockAgentRunner(
+            AgentRunOutcome(
+                status="outcome_unknown",
+                error="Provider timed out after dispatch",
+                provider_request_id="provider-op-1",
+            )
+        )
+        use_case = ExecuteNextActionUseCase(uow=uow, runner=runner)
+        async with uow:
+            await uow.tasks.save(task)
+            await uow.commit()
+
+        command = ExecuteNextActionCommand(
+            task_id=task.id, owner_id="user_1", idempotency_key="notify-1"
+        )
+        first = await use_case.execute(command)
+        second = await use_case.execute(command)
+
+        assert first.attempt.status == "outcome_unknown"
+        assert first.attempt.provider_request_id == "provider-op-1"
+        assert second.outcome.status == "outcome_unknown"
+        assert len(runner.invocations) == 1
+
+    @pytest.mark.anyio
+    async def test_reconciliation_observes_and_completes_without_dispatch(self):
+        uow = InMemoryUnitOfWork()
+        task = Task(owner_id="user_1", title="Reconcile provider")
+        action = task.add_next_action("Send provider notification", tool_hint="webhook_post")
+        runner = MockAgentRunner(
+            AgentRunOutcome(status="outcome_unknown", provider_request_id="op-1")
+        )
+        execute = ExecuteNextActionUseCase(uow=uow, runner=runner)
+        async with uow:
+            await uow.tasks.save(task)
+            await uow.commit()
+        first = await execute.execute(
+            ExecuteNextActionCommand(task_id=task.id, owner_id="user_1", idempotency_key="k1")
+        )
+
+        evidence = Evidence.machine_verified(
+            target_task_id=task.id,
+            target_action_id=action.id,
+            verifier_identity="integration:webhook_post.reconcile",
+            details={"status": "completed"},
+        )
+        runner.reconciliation_outcome = AgentRunOutcome(status="completed", evidence=evidence)
+        reconciled = await ReconcileExecutionUseCase(uow=uow, runner=runner).execute(
+            ReconcileExecutionCommand(
+                task_id=task.id, attempt_id=first.attempt.id, owner_id="user_1"
+            )
+        )
+
+        assert reconciled.attempt.status == "completed"
+        assert reconciled.task.status == TaskStatus.COMPLETED
+        assert len(runner.invocations) == 1
+
+    @pytest.mark.anyio
     async def test_execute_next_action_fails_when_task_awaiting_approval(self):
         uow = InMemoryUnitOfWork()
         task = Task(owner_id="user_1", title="Critical task")
@@ -221,3 +300,107 @@ class TestExecuteNextActionUseCase:
 
         assert "awaiting_approval" in str(exc_info.value)
         assert len(runner.invocations) == 0
+
+    @pytest.mark.anyio
+    async def test_approved_action_requires_matching_one_time_token(self):
+        uow = InMemoryUnitOfWork()
+        task = Task(owner_id="user_1", title="Delete archive")
+        action = task.add_next_action(
+            "Delete old archive", risk_level=ActionRiskLevel.CONSEQUENTIAL
+        )
+        request_runner = MockAgentRunner(
+            AgentRunOutcome(
+                status="awaiting_approval",
+                action_spec=ActionSpecification(
+                    tool_name="system_action",
+                    canonical_args={"target": action.description},
+                    task_id=task.id,
+                    permission_scope="local_exec",
+                ),
+                approval_justification="Needs approval",
+            )
+        )
+        use_case = ExecuteNextActionUseCase(uow=uow, runner=request_runner)
+
+        async with uow:
+            await uow.tasks.save(task)
+            await uow.commit()
+
+        first = await use_case.execute(ExecuteNextActionCommand(task_id=task.id, owner_id="user_1"))
+        assert first.approval_request is not None
+        assert first.approval_token
+
+        async with uow:
+            approval = await uow.approvals.get_for_owner(first.approval_request.id, "user_1")
+            stored_task = await uow.tasks.get_for_owner(task.id, "user_1")
+            assert approval is not None and stored_task is not None
+            approval.approve("user_1")
+            stored_task.approval_granted()
+            await uow.approvals.save(approval)
+            await uow.tasks.save(stored_task)
+            await uow.commit()
+
+        completion = Evidence.machine_verified(
+            target_task_id=task.id,
+            target_action_id=action.id,
+            verifier_identity="tool:archive",
+            details={"deleted": True},
+        )
+        completion_runner = MockAgentRunner(
+            AgentRunOutcome(status="completed", evidence=completion)
+        )
+        completed = await ExecuteNextActionUseCase(uow=uow, runner=completion_runner).execute(
+            ExecuteNextActionCommand(
+                task_id=task.id,
+                owner_id="user_1",
+                approval_token=first.approval_token,
+            )
+        )
+        assert completed.task.status == TaskStatus.COMPLETED
+
+        async with uow:
+            consumed = await uow.approvals.get_for_owner(first.approval_request.id, "user_1")
+            assert consumed is not None and consumed.status.value == "consumed"
+
+    @pytest.mark.anyio
+    async def test_wrong_token_is_rejected_before_runner_and_does_not_consume_approval(self):
+        uow = InMemoryUnitOfWork()
+        task = Task(owner_id="user_1", title="Delete archive")
+        action = task.add_next_action(
+            "Delete old archive", risk_level=ActionRiskLevel.CONSEQUENTIAL
+        )
+        action_spec = ActionSpecification(
+            tool_name="system_action",
+            canonical_args={"target": action.description},
+            task_id=task.id,
+            permission_scope="local_exec",
+        )
+        approval, token = ApprovalRequest.create(
+            owner_id="user_1",
+            task_id=task.id,
+            action=action_spec,
+            risk_level=ActionRiskLevel.CONSEQUENTIAL,
+            justification="Needs approval",
+        )
+        approval.approve("user_1")
+        task.start()
+        async with uow:
+            await uow.tasks.save(task)
+            await uow.approvals.save(approval)
+            await uow.commit()
+
+        runner = MockAgentRunner()
+        use_case = ExecuteNextActionUseCase(uow=uow, runner=runner)
+        with pytest.raises(InvalidApprovalError):
+            await use_case.execute(
+                ExecuteNextActionCommand(
+                    task_id=task.id,
+                    owner_id="user_1",
+                    approval_token=f"{token}-tampered",
+                )
+            )
+        assert runner.invocations == []
+
+        async with uow:
+            stored = await uow.approvals.get_for_owner(approval.id, "user_1")
+            assert stored is not None and stored.status.value == "approved"

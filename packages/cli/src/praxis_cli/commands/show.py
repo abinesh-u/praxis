@@ -37,8 +37,18 @@ async def _show(task_id_str: str, profile: str | None, timezone: str | None) -> 
 
         async with uow:
             task = await resolve_task_by_short_id(uow, task_id_str, cfg.profile)
+            attempts = await uow.attempts.list_for_task(task.id, cfg.profile)
+            pending_approvals = await uow.approvals.list_for_task(task.id, cfg.profile)
+            pending_approvals = [
+                approval for approval in pending_approvals if approval.status.value == "pending"
+            ]
 
-        render_task_detail(task, user_tz=cfg.timezone)
+        render_task_detail(
+            task,
+            user_tz=cfg.timezone,
+            attempts=attempts,
+            pending_approvals=pending_approvals,
+        )
     except Exception as exc:
         render_error(exc)
         raise typer.Exit(1) from exc

@@ -226,6 +226,14 @@ class JsonApprovalRepository(ApprovalRepository):
             if raw.get("owner_id") == owner_id and raw.get("status") == ApprovalStatus.PENDING.value
         ]
 
+    async def list_for_task(self, task_id: UUID, owner_id: str) -> list[ApprovalRequest]:
+        task_id_str = str(task_id)
+        return [
+            ApprovalRequest.model_validate(raw)
+            for raw in self._approvals.values()
+            if raw.get("owner_id") == owner_id and raw.get("task_id") == task_id_str
+        ]
+
 
 class JsonAttemptRepository(AttemptRepository):
     """ExecutionAttempt repository backed by JSON storage."""
@@ -259,6 +267,21 @@ class JsonAttemptRepository(AttemptRepository):
             if raw.get("owner_id") == owner_id and raw.get("idempotency_key") == key:
                 return ExecutionAttempt.model_validate(raw)
         return None
+
+    async def list_for_tasks(
+        self, task_ids: list[UUID], owner_id: str
+    ) -> dict[UUID, list[ExecutionAttempt]]:
+        wanted = set(task_ids)
+        grouped: dict[UUID, list[ExecutionAttempt]] = {task_id: [] for task_id in wanted}
+        for raw in self._attempts.values():
+            if raw.get("owner_id") != owner_id:
+                continue
+            attempt = ExecutionAttempt.model_validate(raw)
+            if attempt.task_id in wanted:
+                grouped[attempt.task_id].append(attempt)
+        for attempts in grouped.values():
+            attempts.sort(key=lambda value: value.started_at, reverse=True)
+        return grouped
 
     async def list_for_task(self, task_id: UUID, owner_id: str) -> list[ExecutionAttempt]:
         tid_str = str(task_id)

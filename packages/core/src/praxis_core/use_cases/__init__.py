@@ -27,6 +27,10 @@ from praxis_core.use_cases.get_daily_agenda import (
     DailyAgendaResult,
     GetDailyAgendaUseCase,
 )
+from praxis_core.use_cases.reconcile_execution import (
+    ReconcileExecutionCommand,
+    ReconcileExecutionUseCase,
+)
 from praxis_core.use_cases.resolve_approval import (
     ResolveApprovalCommand,
     ResolveApprovalResult,
@@ -52,4 +56,6 @@ __all__ = [
     "ResolveApprovalCommand",
     "ResolveApprovalResult",
     "ResolveApprovalUseCase",
+    "ReconcileExecutionCommand",
+    "ReconcileExecutionUseCase",
 ]

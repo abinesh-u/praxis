@@ -12,6 +12,7 @@ from praxis_cli.commands.defer import defer
 from praxis_cli.commands.do import do
 from praxis_cli.commands.doctor import doctor
 from praxis_cli.commands.list_tasks import list_tasks
+from praxis_cli.commands.reconcile import reconcile
 from praxis_cli.commands.show import show
 from praxis_cli.commands.status import status
 from praxis_cli.commands.today import today
@@ -31,6 +32,9 @@ app.command(name="today", help="Show prioritized agenda with #1 next action spot
 app.command(name="list", help="List tasks filtered by lifecycle status.")(list_tasks)
 app.command(name="show", help="Display full task detail, attempts, and evidence.")(show)
 app.command(name="do", help="Execute the immediate next action for a task.")(do)
+app.command(name="reconcile", help="Safely reconcile an uncertain API execution attempt.")(
+    reconcile
+)
 app.command(name="complete", help="Mark a task complete with verified evidence.")(complete)
 app.command(name="defer", help="Reschedule a task with zero guilt or shame.")(defer)
 

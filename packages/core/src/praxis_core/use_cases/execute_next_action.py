@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from praxis_core.entities.approval import ActionSpecification, ApprovalRequest
-from praxis_core.entities.common import ActionRiskLevel, DependencyType, TaskStatus
+from praxis_core.entities.common import ActionRiskLevel, ApprovalStatus, DependencyType, TaskStatus
 from praxis_core.entities.execution_attempt import ExecutionAttempt
 from praxis_core.entities.next_action import NextAction
 from praxis_core.entities.task import Task
@@ -28,6 +28,7 @@ class ExecuteNextActionCommand(BaseModel):
     owner_id: str
     workspace_root: str | None = None
     idempotency_key: str | None = None
+    approval_token: str | None = None
 
 
 class ExecuteNextActionResult(BaseModel):
@@ -38,6 +39,7 @@ class ExecuteNextActionResult(BaseModel):
     attempt: ExecutionAttempt
     outcome: AgentRunOutcome
     approval_request: ApprovalRequest | None = None
+    approval_token: str | None = None
 
 
 class ExecuteNextActionUseCase:
@@ -87,7 +89,7 @@ class ExecuteNextActionUseCase:
                                 output="Action already completed (idempotent replay)",
                             ),
                         )
-                    if existing_attempt.status == "awaiting_approval":
+                    if existing_attempt.status == "awaiting_approval" and not cmd.approval_token:
                         approval = None
                         if existing_attempt.approval_id:
                             approval = await self.uow.approvals.get_for_owner(
@@ -100,6 +102,18 @@ class ExecuteNextActionUseCase:
                             attempt=existing_attempt,
                             outcome=AgentRunOutcome(status="awaiting_approval"),
                             approval_request=approval,
+                        )
+                    if existing_attempt.status == "outcome_unknown":
+                        return ExecuteNextActionResult(
+                            task=task,
+                            action=matched_action,
+                            attempt=existing_attempt,
+                            outcome=AgentRunOutcome(
+                                status="outcome_unknown",
+                                error=existing_attempt.error
+                                or "External outcome requires reconciliation before retry",
+                                provider_request_id=existing_attempt.provider_request_id,
+                            ),
                         )
 
             if task.status not in (TaskStatus.PLANNED, TaskStatus.IN_PROGRESS):
@@ -122,6 +136,37 @@ class ExecuteNextActionUseCase:
 
             if blocking_ids:
                 raise BlockedTaskError(task.id, blocking_ids)
+
+            # A consequential action must present the one-time token bound to
+            # the exact action that was approved. Consumption happens inside
+            # the transaction before the runner is invoked.
+            if cmd.approval_token:
+                action_spec = ActionSpecification(
+                    tool_name=action.tool_hint or "system_action",
+                    canonical_args=action.tool_args_hint or {"target": action.description},
+                    task_id=task.id,
+                    permission_scope=(
+                        "external_http" if action.tool_hint == "webhook_post" else "local_exec"
+                    ),
+                )
+                approvals = await self.uow.approvals.list_for_task(task.id, cmd.owner_id)
+                approval = next(
+                    (
+                        candidate
+                        for candidate in approvals
+                        if candidate.status == ApprovalStatus.APPROVED
+                        and candidate.action_fingerprint == action_spec.fingerprint()
+                    ),
+                    None,
+                )
+                if approval is None:
+                    raise InvalidStateTransitionError(
+                        task.status.value,
+                        TaskStatus.IN_PROGRESS.value,
+                        "No approved request matches this action",
+                    )
+                approval.consume(cmd.approval_token, action_spec)
+                await self.uow.approvals.save(approval)
 
             if task.status == TaskStatus.PLANNED:
                 task.start()
@@ -150,10 +195,12 @@ class ExecuteNextActionUseCase:
             action=action,
             owner_id=cmd.owner_id,
             workspace_root=cmd.workspace_root,
+            approval_token=cmd.approval_token,
         )
 
         # Phase 3: Post-execution reconciliation
         approval_req: ApprovalRequest | None = None
+        raw_approval_token: str | None = None
         async with self.uow:
             task = await self.uow.tasks.get_for_owner(cmd.task_id, cmd.owner_id)
             attempt = await self.uow.attempts.get_for_owner(attempt.id, cmd.owner_id)
@@ -168,7 +215,7 @@ class ExecuteNextActionUseCase:
                     canonical_args={},
                     task_id=task.id,
                 )
-                approval_req, _ = ApprovalRequest.create(
+                approval_req, raw_approval_token = ApprovalRequest.create(
                     owner_id=cmd.owner_id,
                     task_id=task.id,
                     action=action_spec,
@@ -195,6 +242,13 @@ class ExecuteNextActionUseCase:
                         recovery_suggestion="Verify action execution requirements and retry",
                     )
 
+            elif outcome.status == "outcome_unknown":
+                attempt.mark_outcome_unknown(
+                    outcome.error or "External outcome requires reconciliation",
+                    outcome.provider_request_id,
+                )
+                task.recovery_suggestion = "Reconcile the provider outcome before retrying"
+
             else:  # failed
                 err_msg = outcome.error or "Tool execution failed"
                 attempt.mark_failed(err_msg)
@@ -214,4 +268,5 @@ class ExecuteNextActionUseCase:
                 attempt=attempt,
                 outcome=outcome,
                 approval_request=approval_req,
+                approval_token=raw_approval_token if approval_req else None,
             )

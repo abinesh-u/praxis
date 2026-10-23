@@ -28,6 +28,10 @@ class ApprovalRepository(Protocol):
         """List active pending approvals for an owner."""
         ...
 
+    async def list_for_task(self, task_id: UUID, owner_id: str) -> list[ApprovalRequest]:
+        """List approvals for one task within the owner boundary."""
+        ...
+
 
 class InMemoryApprovalRepository:
     """In-memory approval repository for testing."""
@@ -56,4 +60,11 @@ class InMemoryApprovalRepository:
             a.model_copy(deep=True)
             for a in self._approvals.values()
             if a.owner_id == owner_id and a.status == ApprovalStatus.PENDING
+        ]
+
+    async def list_for_task(self, task_id: UUID, owner_id: str) -> list[ApprovalRequest]:
+        return [
+            a.model_copy(deep=True)
+            for a in self._approvals.values()
+            if a.owner_id == owner_id and a.task_id == task_id
         ]

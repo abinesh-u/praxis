@@ -31,6 +31,14 @@ class AttemptRepository(Protocol):
         """Look up execution attempt by idempotency key and owner."""
         ...
 
+    async def list_for_tasks(
+        self,
+        task_ids: list[UUID],
+        owner_id: str,
+    ) -> dict[UUID, list[ExecutionAttempt]]:
+        """Return bounded attempt summaries grouped by owner-scoped task IDs."""
+        ...
+
 
 class InMemoryAttemptRepository:
     """In-memory attempt repository for testing."""
@@ -63,3 +71,15 @@ class InMemoryAttemptRepository:
             if attempt.owner_id == owner_id and attempt.idempotency_key == key:
                 return attempt.model_copy(deep=True)
         return None
+
+    async def list_for_tasks(
+        self, task_ids: list[UUID], owner_id: str
+    ) -> dict[UUID, list[ExecutionAttempt]]:
+        wanted = set(task_ids)
+        grouped: dict[UUID, list[ExecutionAttempt]] = {task_id: [] for task_id in wanted}
+        for attempt in self._attempts.values():
+            if attempt.owner_id == owner_id and attempt.task_id in wanted:
+                grouped[attempt.task_id].append(attempt.model_copy(deep=True))
+        for attempts in grouped.values():
+            attempts.sort(key=lambda value: value.started_at, reverse=True)
+        return grouped

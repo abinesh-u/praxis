@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from praxis_core.entities.approval import ApprovalRequest
 from praxis_core.entities.common import Priority, TaskStatus
+from praxis_core.entities.execution_attempt import ExecutionAttempt
 from praxis_core.entities.task import Task
 from praxis_core.use_cases.capture_commitment import CaptureCommitmentResult
 from praxis_core.use_cases.get_daily_agenda import AgendaTaskItem
@@ -38,6 +39,15 @@ STATUS_ICONS = {
     TaskStatus.CANCELLED: ("—", COLORS["dim"], "Cancelled"),
 }
 
+ATTEMPT_STATUS_LABELS = {
+    "pending": ("Pending", COLORS["dim"]),
+    "running": ("Running", COLORS["focus"]),
+    "awaiting_approval": ("Approval required", COLORS["warning"]),
+    "completed": ("Confirmed", COLORS["success"]),
+    "failed": ("Failed", COLORS["error"]),
+    "outcome_unknown": ("Outcome unknown", COLORS["error"]),
+}
+
 PRIORITY_STYLES = {
     Priority.URGENT: ("⚡ Urgent", COLORS["error"]),
     Priority.IMPORTANT: ("● Important", COLORS["warning"]),
@@ -59,6 +69,51 @@ def format_dt(dt: datetime | None, user_tz: str = "UTC") -> str:
         return local_dt.strftime("%b %d, %I:%M %p")
     except Exception:
         return dt.strftime("%b %d, %I:%M %p")
+
+
+def attempt_status_label(status: str) -> tuple[str, str]:
+    """Return a calm, consistent label for an execution lifecycle state."""
+    return ATTEMPT_STATUS_LABELS.get(status, (status.replace("_", " ").title(), COLORS["dim"]))
+
+
+def latest_attempt(attempts: list[ExecutionAttempt]) -> ExecutionAttempt | None:
+    """Select the newest attempt without assuming repository ordering."""
+    return max(attempts, key=lambda attempt: attempt.started_at, default=None)
+
+
+def render_attempt_summary(attempt: ExecutionAttempt, user_tz: str = "UTC") -> None:
+    """Render durable attempt metadata and safe next steps."""
+    label, color = attempt_status_label(attempt.status)
+    content = Text()
+    content.append(f"Status:          {label}\n", style=color)
+    content.append(f"Attempt ID:      {short_id(attempt.id)}\n", style=COLORS["dim"])
+    content.append(
+        f"Started:         {format_dt(attempt.started_at, user_tz)}\n", style=COLORS["dim"]
+    )
+    if attempt.completed_at:
+        content.append(
+            f"Completed:       {format_dt(attempt.completed_at, user_tz)}\n", style=COLORS["dim"]
+        )
+    if attempt.provider_request_id:
+        content.append(f"Provider ID:     {attempt.provider_request_id}\n", style=COLORS["focus"])
+    if attempt.evidence_id:
+        content.append(
+            f"Evidence ID:      {short_id(attempt.evidence_id)}\n", style=COLORS["success"]
+        )
+    if attempt.error:
+        content.append(f"Details:         {attempt.error}\n", style=COLORS["error"])
+    if attempt.status == "outcome_unknown":
+        content.append(
+            "\nDo not resubmit blindly. Reconcile the attempt or verify the external "
+            "result first.\n"
+            f"Inspect: praxis show {short_id(attempt.task_id)}",
+            style=COLORS["warning"],
+        )
+    console.print(
+        Panel(
+            content, title="[bold sky_blue1]Execution Attempt[/bold sky_blue1]", border_style=color
+        )
+    )
 
 
 def render_spotlight(item: AgendaTaskItem, user_tz: str = "UTC") -> None:
@@ -93,6 +148,7 @@ def render_agenda_table(
     actionable: list[AgendaTaskItem],
     waiting: list[AgendaTaskItem],
     user_tz: str = "UTC",
+    attempts_by_task: dict[UUID, list[ExecutionAttempt]] | None = None,
 ) -> None:
     """Render actionable and waiting queues as a clean, scannable table."""
     if not actionable and not waiting:
@@ -115,7 +171,10 @@ def render_agenda_table(
     for item in actionable:
         icon, style, _ = STATUS_ICONS.get(item.task.status, ("?", COLORS["dim"], ""))
         due = format_dt(item.task.due_date, user_tz) if item.task.due_date else ""
+        attempt = latest_attempt((attempts_by_task or {}).get(item.task.id, []))
         step = item.current_next_action.description if item.current_next_action else "Ready"
+        if attempt and attempt.status in {"running", "pending", "outcome_unknown"}:
+            step = attempt_status_label(attempt.status)[0]
         table.add_row(
             short_id(item.task.id),
             Text(icon, style=style),
@@ -126,15 +185,61 @@ def render_agenda_table(
 
     for item in waiting:
         icon, style, _ = STATUS_ICONS.get(item.task.status, ("?", COLORS["dim"], ""))
+        attempt = latest_attempt((attempts_by_task or {}).get(item.task.id, []))
         reason = item.waiting_reason or "Waiting on dependencies"
+        if attempt and attempt.status == "outcome_unknown":
+            reason = "Outcome unknown — reconcile before retrying"
+        # Preserve recovery guidance verbatim; Rich wraps it for narrow terminals.
+        display_reason = reason
         table.add_row(
             short_id(item.task.id),
             Text(icon, style=style),
             Text(item.task.title[:45], style=COLORS["dim"]),
-            Text(reason[:40], style=COLORS["dim"]),
+            Text(display_reason, style=COLORS["dim"]),
             "",
         )
 
+    console.print(table)
+
+
+def render_api_agenda(agenda: dict[str, object]) -> None:
+    """Render the API agenda using the same lifecycle labels as local Today."""
+    actionable = agenda.get("actionable") or []
+    waiting = agenda.get("waiting") or []
+    if not actionable and not waiting:
+        console.print("  ✨ No active tasks on your agenda.", style=COLORS["dim"])
+        return
+    if actionable and isinstance(actionable, list) and isinstance(actionable[0], dict):
+        first = actionable[0].get("task", {})
+        if isinstance(first, dict):
+            next_action = first.get("current_next_action") or {}
+            description = next_action.get("description") or first.get("title", "")
+            console.print("\n[bold sky_blue1]NEXT ACTION[/bold sky_blue1]")
+            console.print(f"  {description}")
+
+    table = Table(show_header=True, header_style="bold grey70", box=None, padding=(0, 2))
+    table.add_column("Status", min_width=18)
+    table.add_column("Task", min_width=28)
+    table.add_column("Next action / recovery", min_width=28)
+    for item in [*actionable, *waiting]:
+        if not isinstance(item, dict):
+            continue
+        task = item.get("task") or {}
+        if not isinstance(task, dict):
+            continue
+        attempt = item.get("attempt") or {}
+        status = attempt.get("status") if isinstance(attempt, dict) else None
+        if not status:
+            status = task.get("status") or ("blocked" if item.get("is_blocked") else "ready")
+        label, color = attempt_status_label(str(status))
+        reason = item.get("waiting_reason") or ""
+        if status == "outcome_unknown":
+            reason = "Outcome unknown — reconcile before retrying"
+        next_action = task.get("current_next_action") or {}
+        step = reason or (
+            next_action.get("description", "") if isinstance(next_action, dict) else ""
+        )
+        table.add_row(Text(label, style=color), str(task.get("title", "")), str(step))
     console.print(table)
 
 
@@ -173,7 +278,12 @@ def render_capture_result(result: CaptureCommitmentResult, user_tz: str = "UTC")
     console.print(Panel(content, border_style=COLORS["success"], padding=(1, 2)))
 
 
-def render_task_detail(task: Task, user_tz: str = "UTC") -> None:
+def render_task_detail(
+    task: Task,
+    user_tz: str = "UTC",
+    attempts: list[ExecutionAttempt] | None = None,
+    pending_approvals: list[ApprovalRequest] | None = None,
+) -> None:
     """Render full detail view for a task."""
     icon, status_color, status_label = STATUS_ICONS.get(task.status, ("?", "", str(task.status)))
     pri_label, pri_color = PRIORITY_STYLES.get(task.priority, ("", ""))
@@ -215,6 +325,38 @@ def render_task_detail(task: Task, user_tz: str = "UTC") -> None:
         for d in task.dependencies:
             dep_id = short_id(d.depends_on_task_id)
             content.append(f"  • {d.dependency_type.value}: Task {dep_id}\n", style=COLORS["dim"])
+
+    if pending_approvals:
+        content.append(f"\nPending approvals: {len(pending_approvals)}\n", style=COLORS["warning"])
+        content.append(
+            f"  Review with: praxis approvals approve {short_id(pending_approvals[0].id)}\n",
+            style=COLORS["focus"],
+        )
+
+    if attempts:
+        content.append("\nExecution attempts:\n", style="bold white")
+        for attempt in sorted(attempts, key=lambda value: value.started_at, reverse=True):
+            label, color = attempt_status_label(attempt.status)
+            suffix = f" — {attempt.error}" if attempt.error else ""
+            content.append(
+                f"  • {short_id(attempt.id)}  {label}{suffix}\n",
+                style=color,
+            )
+            if attempt.provider_request_id:
+                content.append(
+                    f"    Provider ID: {attempt.provider_request_id}\n",
+                    style=COLORS["focus"],
+                )
+            if attempt.evidence_id:
+                content.append(
+                    f"    Evidence ID: {short_id(attempt.evidence_id)}\n",
+                    style=COLORS["success"],
+                )
+            if attempt.status == "outcome_unknown":
+                content.append(
+                    "    Reconcile before retrying; inspect provider outcome.\n",
+                    style=COLORS["warning"],
+                )
 
     panel = Panel(
         content,
