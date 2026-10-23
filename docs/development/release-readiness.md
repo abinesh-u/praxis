@@ -61,6 +61,31 @@ The controlled-provider test must independently assert the provider call
 sequence (`POST`, then `GET`) rather than inferring dispatch from Praxis's
 internal execution-attempt records.
 
+For M1 provider validation, use [the provider contract](m1-provider-contract.md),
+[the validation matrix](m1-validation-matrix.md), and the two-phase helper:
+
+```bash
+PRAXIS_API_URL=http://localhost:8000 \
+PRAXIS_OWNER_ID=... \
+PRAXIS_TASK_ID=... \
+PRAXIS_API_TOKEN=... \
+PRAXIS_APPROVAL_TOKEN=... \
+./.venv/bin/python scripts/m1_validate_provider.py dispatch \
+  --idempotency-key m1-disposable-001
+
+PRAXIS_API_URL=http://localhost:8000 \
+PRAXIS_OWNER_ID=... \
+PRAXIS_TASK_ID=... \
+PRAXIS_API_TOKEN=... \
+./.venv/bin/python scripts/m1_validate_provider.py reconcile \
+  --attempt-id <attempt-id-from-dispatch>
+```
+
+The helper performs one dispatch or one read-only reconciliation only; it does
+not retry uncertain actions. Its API client timeout defaults to 30 seconds so
+Praxis can finish recording a provider timeout; override it with
+`PRAXIS_API_TIMEOUT` when the deployment contract requires a different bound.
+
 ## Manual unresolved-attempt procedure
 
 1. Run `praxis show <task-id>` and record the attempt ID and provider request

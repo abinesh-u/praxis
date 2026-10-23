@@ -53,9 +53,13 @@ class WebhookRunner:
             address = ipaddress.ip_address(host)
         except ValueError:
             address = None
-        if host in {"localhost", "localhost.localdomain"} or (
+        private_destination = host in {"localhost", "localhost.localdomain"} or (
             address and (address.is_private or address.is_loopback or address.is_link_local)
-        ):
+        )
+        local_override = os.getenv(
+            "PRAXIS_WEBHOOK_ALLOW_PRIVATE_DESTINATIONS"
+        ) == "m1-local-only" and os.getenv("APP_ENV", "development") in {"development", "test"}
+        if private_destination and not local_override:
             return "Webhook destination points to a restricted private address"
         configured_hosts = os.getenv("PRAXIS_WEBHOOK_ALLOWED_HOSTS")
         if configured_hosts:
@@ -66,6 +70,14 @@ class WebhookRunner:
 
     def _destination_error(self) -> str | None:
         return self._validate_destination(self.endpoint)
+
+    @staticmethod
+    def _provider_headers(idempotency_key: str) -> dict[str, str]:
+        headers = {"Idempotency-Key": idempotency_key}
+        token = os.getenv("PRAXIS_WEBHOOK_AUTH_TOKEN")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
 
     async def _resolved_destination_error(self, url: str) -> str | None:
         parsed = urlparse(url)
@@ -80,7 +92,12 @@ class WebhookRunner:
                 address = ipaddress.ip_address(value)
             except ValueError:
                 continue
-            if address.is_private or address.is_loopback or address.is_link_local:
+            local_override = os.getenv(
+                "PRAXIS_WEBHOOK_ALLOW_PRIVATE_DESTINATIONS"
+            ) == "m1-local-only" and os.getenv("APP_ENV", "development") in {"development", "test"}
+            if (
+                address.is_private or address.is_loopback or address.is_link_local
+            ) and not local_override:
                 return "Webhook destination resolved to a restricted private address"
         return None
 
@@ -148,7 +165,7 @@ class WebhookRunner:
                         "attempt_id": str(attempt_id),
                         "payload": payload,
                     },
-                    headers={"Idempotency-Key": str(attempt_id)},
+                    headers=self._provider_headers(str(attempt_id)),
                 ) as response,
             ):
                 provider_request_id = response.headers.get("X-Operation-ID")
@@ -243,7 +260,9 @@ class WebhookRunner:
                     follow_redirects=False,
                     transport=self.transport,
                 ) as client,
-                client.stream("GET", url, headers={"Idempotency-Key": idempotency_key}) as response,
+                client.stream(
+                    "GET", url, headers=self._provider_headers(idempotency_key)
+                ) as response,
             ):
                 document, parse_error = await self._read_json(response)
                 status_code = response.status_code

@@ -57,6 +57,40 @@ async def test_invalid_provider_id_is_not_used_as_a_status_path():
 
 
 @pytest.mark.anyio
+async def test_provider_redirect_is_not_followed(monkeypatch):
+    calls: list[str] = []
+
+    async def provider(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(
+            302,
+            headers={"Location": "https://unapproved.example.com/redirected"},
+            request=request,
+        )
+
+    runner = WebhookRunner(
+        "https://hooks.example.com/action", transport=httpx.MockTransport(provider)
+    )
+
+    async def no_dns(_url: str) -> None:
+        return None
+
+    monkeypatch.setattr(runner, "_resolved_destination_error", no_dns)
+    task = Task(owner_id="owner", title="Notify")
+    action = task.add_next_action("Send notification", tool_hint="webhook_post")
+    outcome = await runner.execute_action(
+        attempt_id=uuid4(),
+        task=task,
+        action=action,
+        owner_id="owner",
+        approval_token="approved-token",
+    )
+
+    assert outcome.status == "outcome_unknown"
+    assert calls == ["https://hooks.example.com/action"]
+
+
+@pytest.mark.anyio
 async def test_timeout_then_reconcile_uses_get_without_a_second_post(monkeypatch):
     calls: list[str] = []
 
