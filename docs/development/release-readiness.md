@@ -5,6 +5,11 @@ users. The automated suite validates the lifecycle against a deterministic
 provider transport; a disposable real-provider run is still required before
 production use.
 
+M1 local evidence is recorded in
+[m1-local-recovery-evidence-2026-10-23.md](m1-local-recovery-evidence-2026-10-23.md).
+M2 operator procedures are documented in
+[m2-operational-recovery.md](m2-operational-recovery.md).
+
 ## Provider and network
 
 - [ ] Provider documents `Idempotency-Key` retention and duplicate-request
@@ -33,8 +38,10 @@ production use.
 
 ## Persistence and recovery
 
-- [ ] SQLite backups are scheduled and a restore has been tested.
-- [ ] Audit retention and access are defined for the deployment.
+- [ ] SQLite backups are scheduled and a restore has been tested with
+      `scripts/sqlite_backup.py`.
+- [ ] Audit retention and access are defined; pruning uses an explicit,
+      reviewed cutoff and preserves active-incident records.
 - [ ] After a process restart, attempts retain their attempt ID, provider
       operation ID, idempotency linkage, status, evidence, and recovery text.
 - [ ] The provider never returns an operation ID: keep the attempt
