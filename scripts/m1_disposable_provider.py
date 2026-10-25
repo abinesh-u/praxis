@@ -3,8 +3,8 @@
 
 The provider is intentionally local and bounded: it stores operations only in
 memory, requires a bearer token, records independent POST/GET counters, and
-supports deterministic completion, pending, rejection, and accepted-then-
-delayed-response behavior.
+supports deterministic completion, pending, rejection, accepted-then-delayed
+response, missing-operation-ID, and final/ambiguous failure behavior.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ TOKEN = os.getenv("M1_PROVIDER_TOKEN", "")
 MODE = os.getenv("M1_PROVIDER_MODE", "complete")
 DELAY_SECONDS = float(os.getenv("M1_PROVIDER_DELAY_SECONDS", "15"))
 
-operations: dict[str, dict[str, str]] = {}
+operations: dict[str, dict[str, str | bool]] = {}
 idempotency: dict[str, str] = {}
 counters = {"post_count": 0, "get_count": 0, "effect_count": 0}
 state_lock = Lock()
@@ -77,15 +77,28 @@ class ProviderHandler(BaseHTTPRequestHandler):
                 operations[operation_id] = {"status": "pending", "idempotency_key": key}
                 if MODE == "complete":
                     operations[operation_id]["status"] = "completed"
-                counters["effect_count"] += 1
-            status = operations[operation_id]["status"]
+                elif MODE == "reject":
+                    operations[operation_id]["status"] = "failed"
+                    operations[operation_id]["failure_final"] = True
+                if MODE != "reject":
+                    counters["effect_count"] += 1
+            stored = operations[operation_id]
+            status = stored["status"]
+            failure_final = stored.get("failure_final") is True
 
-        if MODE == "reject" and is_new:
+        if failure_final:
             self.send_json(
                 400,
-                {"status": "failed", "failure_final": True},
+                {
+                    "operation_id": operation_id,
+                    "status": "failed",
+                    "failure_final": True,
+                },
                 operation_id=operation_id,
             )
+            return
+        if MODE == "missing_id" and is_new:
+            self.send_json(200, {"status": status})
             return
         if MODE == "timeout_after_acceptance" and is_new:
             body = json_bytes({"operation_id": operation_id, "status": status})
@@ -128,18 +141,46 @@ class ProviderHandler(BaseHTTPRequestHandler):
             if operation is None:
                 self.send_json(404, {"status": "failed", "failure_final": True})
                 return
-            self.send_json(
-                200,
-                {"operation_id": operation_id, "status": operation["status"]},
-                operation_id=operation_id,
-            )
+            if MODE == "final_failure":
+                self.send_json(
+                    200,
+                    {
+                        "operation_id": operation_id,
+                        "status": "failed",
+                        "failure_final": True,
+                    },
+                    operation_id=operation_id,
+                )
+                return
+            if MODE == "ambiguous_failure":
+                self.send_json(
+                    200,
+                    {"operation_id": operation_id, "status": "failed"},
+                    operation_id=operation_id,
+                )
+                return
+            document: dict[str, str | bool] = {
+                "operation_id": operation_id,
+                "status": str(operation["status"]),
+            }
+            if operation.get("failure_final") is True:
+                document["failure_final"] = True
+            self.send_json(200, document, operation_id=operation_id)
 
 
 def main() -> int:
     if not TOKEN:
         print("Set M1_PROVIDER_TOKEN to a disposable bearer token.", file=sys.stderr)
         return 2
-    if MODE not in {"complete", "pending", "reject", "timeout_after_acceptance"}:
+    if MODE not in {
+        "complete",
+        "pending",
+        "reject",
+        "timeout_after_acceptance",
+        "missing_id",
+        "final_failure",
+        "ambiguous_failure",
+    }:
         print(f"Unsupported M1_PROVIDER_MODE: {MODE}", file=sys.stderr)
         return 2
     server = ThreadingHTTPServer((HOST, PORT), ProviderHandler)

@@ -19,3 +19,7 @@ POST/GET counters independently from Praxis execution-attempt records.
 The M1 exit evidence must include the provider contract, environment and
 network checks, sanitized Praxis responses, provider request counters, and any
 limitations that prevent an exactly-once claim.
+
+The disposable provider supports these reproducible modes: `complete`,
+`pending`, `reject`, `timeout_after_acceptance`, `missing_id`, `final_failure`,
+and `ambiguous_failure`.

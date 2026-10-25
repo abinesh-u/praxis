@@ -30,6 +30,10 @@ URL path. It must not contain credentials or arbitrary path syntax.
 Praxis performs a read-only `GET` against the configured status endpoint. The
 response must contain a JSON object with one of these semantics:
 
+If the status endpoint has a different origin from the dispatch endpoint,
+configure `PRAXIS_WEBHOOK_STATUS_AUTH_TOKEN`. Praxis refuses to forward the
+dispatch credential across origins.
+
 | Provider response | Praxis state |
 | --- | --- |
 | `{"status":"completed"}` | Confirmed completion and machine evidence |
@@ -60,5 +64,7 @@ exactly-once guarantee.
 `scripts/m1_disposable_provider.py` binds to loopback for local validation. To
 use it, set `APP_ENV=development` and
 `PRAXIS_WEBHOOK_ALLOW_PRIVATE_DESTINATIONS=m1-local-only`. This explicit
-override is restricted to development/test environments and must never be set
-in staging or production.
+override requires an explicitly set `APP_ENV=development` or `APP_ENV=test`
+and must never be set in staging or production. Authenticated external
+endpoints must use HTTPS; plaintext HTTP is accepted only for loopback or
+private destinations under this local harness.
