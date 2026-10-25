@@ -27,16 +27,24 @@ def list_tasks(
             ),
         ),
     ] = None,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-l", help="Maximum number of tasks to return (1-1000)"),
+    ] = 50,
+    offset: Annotated[
+        int,
+        typer.Option("--offset", help="Number of tasks to skip"),
+    ] = 0,
     profile: Annotated[
         str | None,
         typer.Option("--profile", "-p", help="Target profile"),
     ] = None,
 ) -> None:
     """List tasks belonging to the active profile."""
-    asyncio.run(_list_tasks(status, profile))
+    asyncio.run(_list_tasks(status, limit, offset, profile))
 
 
-async def _list_tasks(status_str: str | None, profile: str | None) -> None:
+async def _list_tasks(status_str: str | None, limit: int, offset: int, profile: str | None) -> None:
     try:
         cfg = resolve_config(profile_override=profile)
         uow = get_uow(cfg)
@@ -45,9 +53,11 @@ async def _list_tasks(status_str: str | None, profile: str | None) -> None:
 
         async with uow:
             if target_status:
-                tasks = await uow.tasks.list_by_status(target_status, cfg.profile)
+                tasks = await uow.tasks.list_by_status(
+                    target_status, cfg.profile, limit=limit, offset=offset
+                )
             else:
-                tasks = await uow.tasks.list_by_owner(cfg.profile)
+                tasks = await uow.tasks.list_by_owner(cfg.profile, limit=limit, offset=offset)
 
         if not tasks:
             console.print("  No tasks found.", style="grey62")

@@ -61,10 +61,8 @@ class CaptureCommitmentUseCase:
                     cmd.owner_id,
                 )
                 if existing_c is not None:
-                    all_tasks = await self.uow.tasks.list_by_owner(cmd.owner_id)
-                    matched_task = next(
-                        (t for t in all_tasks if t.commitment_id == existing_c.id),
-                        None,
+                    matched_task = await self.uow.tasks.find_by_commitment_id(
+                        existing_c.id, cmd.owner_id
                     )
                     next_act = matched_task.get_current_next_action() if matched_task else None
                     return CaptureCommitmentResult(

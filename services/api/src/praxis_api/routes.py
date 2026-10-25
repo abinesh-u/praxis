@@ -127,11 +127,20 @@ def create_api_router(
         owner_id: Annotated[str, Query(min_length=1, max_length=256)],
         request: Request,
         services: Annotated[ApiServices, Depends(get_services)],
+        limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+        offset: Annotated[int, Query(ge=0)] = 0,
     ) -> TaskListResponse:
         trusted_owner = identity_from_app_state(request).resolve(request, owner_id)
         async with services.make_uow() as uow:
-            tasks = await uow.tasks.list_by_owner(trusted_owner)
-        return TaskListResponse(tasks=[TaskResponse.from_entity(task) for task in tasks])
+            raw_tasks = await uow.tasks.list_by_owner(trusted_owner, limit=limit + 1, offset=offset)
+        has_more = len(raw_tasks) > limit
+        tasks = raw_tasks[:limit]
+        return TaskListResponse(
+            tasks=[TaskResponse.from_entity(task) for task in tasks],
+            limit=limit,
+            offset=offset,
+            has_more=has_more,
+        )
 
     @router.get("/tasks/{task_id}", response_model=TaskResponse, tags=["tasks"])
     async def get_task(

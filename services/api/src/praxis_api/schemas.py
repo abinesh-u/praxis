@@ -213,6 +213,9 @@ class CaptureTaskResponse(ApiModel):
 
 class TaskListResponse(ApiModel):
     tasks: list[TaskResponse]
+    limit: int = 100
+    offset: int = 0
+    has_more: bool = False
 
 
 class AgendaItemResponse(ApiModel):

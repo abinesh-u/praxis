@@ -143,19 +143,57 @@ class JsonTaskRepository(TaskRepository):
                 result.append(Task.model_validate(raw))
         return result
 
-    async def list_by_status(self, status: TaskStatus, owner_id: str) -> list[Task]:
-        return [
+    async def list_by_status(
+        self, status: TaskStatus, owner_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Task]:
+        matching = [
             Task.model_validate(raw)
             for raw in self._tasks.values()
             if raw.get("owner_id") == owner_id and raw.get("status") == status.value
         ]
+        matching.sort(key=lambda t: (t.created_at, str(t.id)))
+        return matching[offset : offset + limit]
 
-    async def list_by_owner(self, owner_id: str) -> list[Task]:
-        return [
+    async def list_by_owner(
+        self, owner_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Task]:
+        matching = [
             Task.model_validate(raw)
             for raw in self._tasks.values()
             if raw.get("owner_id") == owner_id
         ]
+        matching.sort(key=lambda t: (t.created_at, str(t.id)))
+        return matching[offset : offset + limit]
+
+    async def find_by_commitment_id(self, commitment_id: UUID, owner_id: str) -> Task | None:
+        target_id_str = str(commitment_id)
+        for raw in self._tasks.values():
+            if raw.get("owner_id") == owner_id and raw.get("commitment_id") == target_id_str:
+                return Task.model_validate(raw)
+        return None
+
+    async def count_by_status(self, owner_id: str) -> dict[TaskStatus, int]:
+        counts = dict.fromkeys(TaskStatus, 0)
+        for raw in self._tasks.values():
+            if raw.get("owner_id") == owner_id:
+                raw_status = raw.get("status")
+                try:
+                    s = TaskStatus(raw_status)
+                    counts[s] = counts.get(s, 0) + 1
+                except ValueError:
+                    continue
+        return counts
+
+    async def find_by_id_prefix(self, prefix: str, owner_id: str) -> list[Task]:
+        clean = prefix.strip().lower().replace("-", "")
+        matches = [
+            Task.model_validate(raw)
+            for raw in self._tasks.values()
+            if raw.get("owner_id") == owner_id
+            and str(raw.get("id", "")).replace("-", "").lower().startswith(clean)
+        ]
+        matches.sort(key=lambda t: str(t.id))
+        return matches
 
 
 class JsonCommitmentRepository(CommitmentRepository):

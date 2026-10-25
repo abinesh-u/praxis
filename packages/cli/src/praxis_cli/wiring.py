@@ -87,8 +87,7 @@ def make_execute_next_action_use_case(
 async def resolve_task_by_short_id(uow: UnitOfWork, short_id: str, owner_id: str) -> Task:
     """Resolve an 8-character prefix strictly within the active owner boundary."""
     clean_prefix = short_id.strip().lower().replace("-", "")
-    all_tasks = await uow.tasks.list_by_owner(owner_id)
-    matches = [t for t in all_tasks if str(t.id).replace("-", "").lower().startswith(clean_prefix)]
+    matches = await uow.tasks.find_by_id_prefix(clean_prefix, owner_id)
     if not matches:
         raise EntityNotFoundError("Task", short_id)
     if len(matches) > 1:

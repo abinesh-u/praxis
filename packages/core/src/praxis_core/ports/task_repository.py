@@ -30,12 +30,28 @@ class TaskRepository(Protocol):
         """List tasks scheduled for or due on today that are not yet completed/cancelled."""
         ...
 
-    async def list_by_status(self, status: TaskStatus, owner_id: str) -> list[Task]:
+    async def list_by_status(
+        self, status: TaskStatus, owner_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Task]:
         """List tasks for an owner matching a specific lifecycle status."""
         ...
 
-    async def list_by_owner(self, owner_id: str) -> list[Task]:
-        """List all tasks belonging to an owner."""
+    async def list_by_owner(
+        self, owner_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Task]:
+        """List tasks belonging to an owner with bounded pagination."""
+        ...
+
+    async def find_by_commitment_id(self, commitment_id: UUID, owner_id: str) -> Task | None:
+        """Find task originating from a commitment."""
+        ...
+
+    async def count_by_status(self, owner_id: str) -> dict[TaskStatus, int]:
+        """Return total counts of tasks grouped by status for an owner."""
+        ...
+
+    async def find_by_id_prefix(self, prefix: str, owner_id: str) -> list[Task]:
+        """Find tasks whose ID starts with the given prefix for an owner."""
         ...
 
 
@@ -98,12 +114,43 @@ class InMemoryTaskRepository:
                 result.append(task.model_copy(deep=True))
         return result
 
-    async def list_by_status(self, status: TaskStatus, owner_id: str) -> list[Task]:
-        return [
+    async def list_by_status(
+        self, status: TaskStatus, owner_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Task]:
+        matching = [
             t.model_copy(deep=True)
             for t in self._tasks.values()
             if t.owner_id == owner_id and t.status == status
         ]
+        matching.sort(key=lambda t: (t.created_at, str(t.id)))
+        return matching[offset : offset + limit]
 
-    async def list_by_owner(self, owner_id: str) -> list[Task]:
-        return [t.model_copy(deep=True) for t in self._tasks.values() if t.owner_id == owner_id]
+    async def list_by_owner(
+        self, owner_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Task]:
+        matching = [t.model_copy(deep=True) for t in self._tasks.values() if t.owner_id == owner_id]
+        matching.sort(key=lambda t: (t.created_at, str(t.id)))
+        return matching[offset : offset + limit]
+
+    async def find_by_commitment_id(self, commitment_id: UUID, owner_id: str) -> Task | None:
+        for t in self._tasks.values():
+            if t.owner_id == owner_id and t.commitment_id == commitment_id:
+                return t.model_copy(deep=True)
+        return None
+
+    async def count_by_status(self, owner_id: str) -> dict[TaskStatus, int]:
+        counts = dict.fromkeys(TaskStatus, 0)
+        for t in self._tasks.values():
+            if t.owner_id == owner_id:
+                counts[t.status] = counts.get(t.status, 0) + 1
+        return counts
+
+    async def find_by_id_prefix(self, prefix: str, owner_id: str) -> list[Task]:
+        clean = prefix.strip().lower().replace("-", "")
+        matches = [
+            t.model_copy(deep=True)
+            for t in self._tasks.values()
+            if t.owner_id == owner_id and str(t.id).replace("-", "").lower().startswith(clean)
+        ]
+        matches.sort(key=lambda t: str(t.id))
+        return matches

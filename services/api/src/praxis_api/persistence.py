@@ -13,11 +13,13 @@ local file.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
 from collections.abc import Iterator
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -67,6 +69,222 @@ def database_url_from_environment() -> str:
     """
 
     return os.environ.get("DATABASE_URL", "sqlite:///praxis.db")
+
+
+def busy_timeout_ms_from_environment() -> int:
+    """Read the configured SQLite busy timeout in milliseconds (default 5000ms)."""
+    raw = os.environ.get("PRAXIS_SQLITE_BUSY_TIMEOUT_MS", "5000")
+    try:
+        val = int(raw)
+        return max(500, min(val, 60_000))
+    except ValueError:
+        return 5000
+
+
+@dataclass(frozen=True)
+class Migration:
+    """A single schema version step."""
+
+    version: int
+    description: str
+    sql: str
+
+
+# Ordered migration registry. Each entry advances the schema by one version.
+MIGRATIONS: list[Migration] = [
+    Migration(
+        version=1,
+        description="Baseline schema with dedicated query and expression indexes",
+        sql="""\
+            CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                due_at TEXT,
+                scheduled_at TEXT,
+                created_at TEXT NOT NULL DEFAULT '',
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS tasks_owner_status_idx ON tasks (owner_id, status);
+            CREATE INDEX IF NOT EXISTS tasks_owner_schedule_idx
+                ON tasks (owner_id, scheduled_at, due_at);
+            CREATE INDEX IF NOT EXISTS tasks_owner_created_idx
+                ON tasks (owner_id, created_at, id);
+            CREATE INDEX IF NOT EXISTS tasks_owner_commitment_idx
+                ON tasks (owner_id, json_extract(payload, '$.commitment_id'));
+            CREATE INDEX IF NOT EXISTS tasks_owner_id_idx
+                ON tasks (owner_id, id);
+
+            CREATE TABLE IF NOT EXISTS commitments (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                idempotency_key TEXT,
+                captured_at TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                UNIQUE (owner_id, idempotency_key)
+            );
+            CREATE INDEX IF NOT EXISTS commitments_owner_captured_idx
+                ON commitments (owner_id, captured_at, id);
+
+            CREATE TABLE IF NOT EXISTS approvals (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS approvals_owner_status_idx
+                ON approvals (owner_id, status, expires_at);
+
+            CREATE TABLE IF NOT EXISTS execution_attempts (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                action_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                status TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                UNIQUE (owner_id, idempotency_key)
+            );
+            CREATE INDEX IF NOT EXISTS attempts_owner_task_idx
+                ON execution_attempts (owner_id, task_id, id);
+
+            CREATE TABLE IF NOT EXISTS audit_events (
+                event_id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                aggregate_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS audit_events_aggregate_idx
+                ON audit_events (aggregate_id, occurred_at, event_id);
+        """,
+    ),
+]
+
+SCHEMA_VERSION = MIGRATIONS[-1].version
+
+
+def _ensure_migration_table(connection: sqlite3.Connection) -> None:
+    """Create the migration tracking table if it does not exist."""
+    connection.execute(
+        """\
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            description TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _current_schema_version(connection: sqlite3.Connection) -> int:
+    """Return the highest applied migration version, or 0 if none."""
+    row = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+REQUIRED_TABLE_COLUMNS: dict[str, set[str]] = {
+    "tasks": {"id", "owner_id", "status", "version", "payload"},
+    "commitments": {"id", "owner_id", "idempotency_key", "captured_at", "payload"},
+    "approvals": {"id", "owner_id", "task_id", "status", "expires_at", "payload"},
+    "execution_attempts": {
+        "id",
+        "owner_id",
+        "task_id",
+        "action_id",
+        "idempotency_key",
+        "status",
+        "payload",
+    },
+    "audit_events": {
+        "event_id",
+        "owner_id",
+        "aggregate_id",
+        "event_type",
+        "occurred_at",
+        "payload",
+    },
+}
+
+
+def _verify_legacy_schema_fingerprint(connection: sqlite3.Connection) -> bool:
+    """Verify legacy database contains all expected baseline tables and required columns."""
+    tables = {
+        r[0]
+        for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    if not set(REQUIRED_TABLE_COLUMNS.keys()).issubset(tables):
+        return False
+    for table_name, expected_cols in REQUIRED_TABLE_COLUMNS.items():
+        actual_cols = {
+            r["name"] for r in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if not expected_cols.issubset(actual_cols):
+            return False
+    return True
+
+
+def _apply_migrations(connection: sqlite3.Connection) -> None:
+    """Apply any unapplied migrations in order within transactional boundaries."""
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+    except sqlite3.OperationalError as exc:
+        raise PersistenceConfigurationError(f"Database lock acquisition timed out: {exc}") from exc
+
+    try:
+        _ensure_migration_table(connection)
+        current = _current_schema_version(connection)
+
+        # Legacy baseline detection (version 0 with pre-existing tables)
+        if current == 0:
+            table_check = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'"
+            ).fetchone()
+            if table_check is not None:
+                if not _verify_legacy_schema_fingerprint(connection):
+                    raise PersistenceConfigurationError(
+                        "Legacy database schema does not match expected baseline format"
+                    )
+                connection.executescript(MIGRATIONS[0].sql)
+                connection.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (version, description, applied_at) "
+                    "VALUES (?, ?, ?)",
+                    (1, "Baseline legacy schema", datetime.now(UTC).isoformat()),
+                )
+                current = 1
+
+        for migration in MIGRATIONS:
+            if migration.version <= current:
+                continue
+            connection.executescript(migration.sql)
+            connection.execute(
+                "INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)",
+                (migration.version, migration.description, datetime.now(UTC).isoformat()),
+            )
+
+        connection.commit()
+    except BaseException as exc:
+        connection.rollback()
+        if isinstance(exc, PersistenceConfigurationError):
+            raise
+        raise PersistenceConfigurationError(f"Failed to apply database migration: {exc}") from exc
+
+
+def schema_version(database_url: str) -> int:
+    """Return the current schema version of the given database URL."""
+    path = sqlite_path_from_url(database_url)
+    timeout_ms = busy_timeout_ms_from_environment()
+    connection = sqlite3.connect(path, timeout=timeout_ms / 1000.0)
+    connection.row_factory = sqlite3.Row
+    try:
+        _ensure_migration_table(connection)
+        return _current_schema_version(connection)
+    finally:
+        connection.close()
 
 
 def sqlite_path_from_url(database_url: str) -> str:
@@ -137,14 +355,17 @@ class SQLiteTaskRepository(_SQLiteRepository):
 
         self._connection.execute(
             """
-            INSERT INTO tasks (id, owner_id, status, version, due_at, scheduled_at, payload)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (
+                id, owner_id, status, version, due_at, scheduled_at, created_at, payload
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 owner_id = excluded.owner_id,
                 status = excluded.status,
                 version = excluded.version,
                 due_at = excluded.due_at,
                 scheduled_at = excluded.scheduled_at,
+                created_at = excluded.created_at,
                 payload = excluded.payload
             """,
             (
@@ -154,6 +375,7 @@ class SQLiteTaskRepository(_SQLiteRepository):
                 task.version,
                 task.due_date.isoformat() if task.due_date else None,
                 task.scheduled_date.isoformat() if task.scheduled_date else None,
+                task.created_at.isoformat(),
                 _payload(task),
             ),
         )
@@ -187,15 +409,56 @@ class SQLiteTaskRepository(_SQLiteRepository):
                 result.append(task)
         return result
 
-    async def list_by_status(self, status: TaskStatus, owner_id: str) -> list[Task]:
+    async def list_by_status(
+        self, status: TaskStatus, owner_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Task]:
+        effective_limit = max(1, min(limit, 1000))
+        effective_offset = max(0, offset)
         rows = self._connection.execute(
-            "SELECT payload FROM tasks WHERE owner_id = ? AND status = ?", (owner_id, status.value)
+            "SELECT payload FROM tasks WHERE owner_id = ? AND status = ? "
+            "ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?",
+            (owner_id, status.value, effective_limit, effective_offset),
         ).fetchall()
         return [_task_from_payload(row["payload"]) for row in rows]
 
-    async def list_by_owner(self, owner_id: str) -> list[Task]:
+    async def list_by_owner(
+        self, owner_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Task]:
+        effective_limit = max(1, min(limit, 1000))
+        effective_offset = max(0, offset)
         rows = self._connection.execute(
-            "SELECT payload FROM tasks WHERE owner_id = ? ORDER BY created_at", (owner_id,)
+            "SELECT payload FROM tasks WHERE owner_id = ? "
+            "ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?",
+            (owner_id, effective_limit, effective_offset),
+        ).fetchall()
+        return [_task_from_payload(row["payload"]) for row in rows]
+
+    async def find_by_commitment_id(self, commitment_id: UUID, owner_id: str) -> Task | None:
+        row = self._connection.execute(
+            "SELECT payload FROM tasks WHERE owner_id = ? "
+            "AND json_extract(payload, '$.commitment_id') = ?",
+            (owner_id, str(commitment_id)),
+        ).fetchone()
+        return _task_from_payload(row["payload"]) if row else None
+
+    async def count_by_status(self, owner_id: str) -> dict[TaskStatus, int]:
+        rows = self._connection.execute(
+            "SELECT status, COUNT(*) as cnt FROM tasks WHERE owner_id = ? GROUP BY status",
+            (owner_id,),
+        ).fetchall()
+        counts = dict.fromkeys(TaskStatus, 0)
+        for row in rows:
+            try:
+                counts[TaskStatus(row["status"])] = int(row["cnt"])
+            except ValueError:
+                continue
+        return counts
+
+    async def find_by_id_prefix(self, prefix: str, owner_id: str) -> list[Task]:
+        clean = prefix.strip().lower().replace("-", "")
+        rows = self._connection.execute(
+            "SELECT payload FROM tasks WHERE owner_id = ? AND id LIKE (? || '%') ORDER BY id ASC",
+            (owner_id, clean),
         ).fetchall()
         return [_task_from_payload(row["payload"]) for row in rows]
 
@@ -350,7 +613,7 @@ class SQLiteAttemptRepository(_SQLiteRepository):
         return ExecutionAttempt.model_validate_json(row["payload"]) if row else None
 
     async def list_for_tasks(
-        self, task_ids: list[UUID], owner_id: str
+        self, task_ids: list[UUID], owner_id: str, *, limit_per_task: int = 10
     ) -> dict[UUID, list[ExecutionAttempt]]:
         grouped: dict[UUID, list[ExecutionAttempt]] = {task_id: [] for task_id in task_ids}
         if not task_ids:
@@ -364,8 +627,10 @@ class SQLiteAttemptRepository(_SQLiteRepository):
         for row in rows:
             attempt = ExecutionAttempt.model_validate_json(row["payload"])
             grouped.setdefault(attempt.task_id, []).append(attempt)
-        for attempts in grouped.values():
-            attempts.sort(key=lambda value: value.started_at, reverse=True)
+        effective_limit = max(1, min(limit_per_task, 100))
+        for task_id in grouped:
+            grouped[task_id].sort(key=lambda value: (value.started_at, str(value.id)), reverse=True)
+            grouped[task_id] = grouped[task_id][:effective_limit]
         return grouped
 
 
@@ -392,11 +657,15 @@ class SQLiteAuditSink(_SQLiteRepository):
         for event in events:
             await self.record(event)
 
-    async def list_for_aggregate(self, aggregate_id: UUID) -> list[DomainEvent]:
+    async def list_for_aggregate(
+        self, aggregate_id: UUID, *, limit: int = 200, offset: int = 0
+    ) -> list[DomainEvent]:
+        effective_limit = max(1, min(limit, 5000))
+        effective_offset = max(0, offset)
         rows = self._connection.execute(
             "SELECT payload FROM audit_events "
-            "WHERE aggregate_id = ? ORDER BY occurred_at, event_id",
-            (str(aggregate_id),),
+            "WHERE aggregate_id = ? ORDER BY occurred_at ASC, event_id ASC LIMIT ? OFFSET ?",
+            (str(aggregate_id), effective_limit, effective_offset),
         ).fetchall()
         return [_event_from_payload(row["payload"]) for row in rows]
 
@@ -412,6 +681,7 @@ class SQLiteUnitOfWork:
     def __init__(self, database_url: str | None = None) -> None:
         self.database_url = database_url or database_url_from_environment()
         self._database_path = sqlite_path_from_url(self.database_url)
+        self._busy_timeout_ms = busy_timeout_ms_from_environment()
         self._connection: sqlite3.Connection | None = None
         self._tracked_tasks: list[Task] = []
 
@@ -424,85 +694,34 @@ class SQLiteUnitOfWork:
 
     def _connect(self) -> sqlite3.Connection:
         if self._database_path != ":memory:":
-            Path(self._database_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
+            db_path = Path(self._database_path).expanduser()
+            if not db_path.parent.exists():
+                db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                with contextlib.suppress(OSError):
+                    db_path.parent.chmod(0o700)
+            if not db_path.exists():
+                db_path.touch(mode=0o600, exist_ok=True)
+                with contextlib.suppress(OSError):
+                    db_path.chmod(0o600)
+
+        timeout_seconds = self._busy_timeout_ms / 1000.0
         connection = sqlite3.connect(
             self._database_path,
             isolation_level=None,
             check_same_thread=False,
-            timeout=5.0,
+            timeout=timeout_seconds,
         )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA busy_timeout = 5000")
+        if self._database_path != ":memory:":
+            connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute(f"PRAGMA busy_timeout = {self._busy_timeout_ms}")
         return connection
 
     def _initialize_schema(self) -> None:
         connection = self._connect()
         try:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS tasks (
-                    id TEXT PRIMARY KEY,
-                    owner_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    version INTEGER NOT NULL,
-                    due_at TEXT,
-                    scheduled_at TEXT,
-                    created_at TEXT NOT NULL DEFAULT '',
-                    payload TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS tasks_owner_status_idx ON tasks (owner_id, status);
-                CREATE INDEX IF NOT EXISTS tasks_owner_schedule_idx
-                    ON tasks (owner_id, scheduled_at, due_at);
-
-                CREATE TABLE IF NOT EXISTS commitments (
-                    id TEXT PRIMARY KEY,
-                    owner_id TEXT NOT NULL,
-                    idempotency_key TEXT,
-                    captured_at TEXT NOT NULL,
-                    payload TEXT NOT NULL,
-                    UNIQUE (owner_id, idempotency_key)
-                );
-                CREATE INDEX IF NOT EXISTS commitments_owner_captured_idx
-                    ON commitments (owner_id, captured_at);
-
-                CREATE TABLE IF NOT EXISTS approvals (
-                    id TEXT PRIMARY KEY,
-                    owner_id TEXT NOT NULL,
-                    task_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    expires_at TEXT NOT NULL,
-                    payload TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS approvals_owner_status_idx
-                    ON approvals (owner_id, status, expires_at);
-
-                CREATE TABLE IF NOT EXISTS execution_attempts (
-                    id TEXT PRIMARY KEY,
-                    owner_id TEXT NOT NULL,
-                    task_id TEXT NOT NULL,
-                    action_id TEXT NOT NULL,
-                    idempotency_key TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    payload TEXT NOT NULL,
-                    UNIQUE (owner_id, idempotency_key)
-                );
-                CREATE INDEX IF NOT EXISTS attempts_owner_task_idx
-                    ON execution_attempts (owner_id, task_id);
-
-                CREATE TABLE IF NOT EXISTS audit_events (
-                    event_id TEXT PRIMARY KEY,
-                    owner_id TEXT NOT NULL,
-                    aggregate_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    occurred_at TEXT NOT NULL,
-                    payload TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS audit_events_aggregate_idx
-                    ON audit_events (aggregate_id, occurred_at);
-                """
-            )
+            _apply_migrations(connection)
         finally:
             connection.close()
 
