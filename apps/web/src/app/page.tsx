@@ -1,13 +1,23 @@
 "use client";
 
 import * as React from "react";
-import { Sparkles, ShieldCheck, ListOrdered, User } from "lucide-react";
+import { Sparkles, ShieldCheck, ListOrdered, User, Key, Lock, Check } from "lucide-react";
 import { CaptureBox } from "@/components/capture-box";
 import { TodayView } from "@/components/today-view";
 import { ApprovalReview } from "@/components/approval-review";
 import { TaskDirectory } from "@/components/task-directory";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { clientAdapter } from "@/lib/api";
 
 /**
  * Operational dashboard page module.
@@ -19,9 +29,38 @@ export default function HomePage() {
   const [refreshTrigger, setRefreshTrigger] = React.useState(0);
   const [isEditingOwner, setIsEditingOwner] = React.useState(false);
 
+  // Authentication configuration modal
+  const [isAuthOpen, setIsAuthOpen] = React.useState(false);
+  const [tokenInput, setTokenInput] = React.useState("");
+  const [hasActiveToken, setHasActiveToken] = React.useState(false);
+
+  React.useEffect(() => {
+    const existing = clientAdapter.getAuthToken();
+    if (existing) {
+      setHasActiveToken(true);
+      setTokenInput(existing);
+    }
+  }, []);
+
   const triggerRefresh = React.useCallback(() => {
     setRefreshTrigger((prev) => prev + 1);
   }, []);
+
+  function handleSaveToken(e: React.FormEvent) {
+    e.preventDefault();
+    clientAdapter.setAuthToken(tokenInput.trim() || null);
+    setHasActiveToken(Boolean(tokenInput.trim()));
+    setIsAuthOpen(false);
+    triggerRefresh();
+  }
+
+  function handleClearToken() {
+    clientAdapter.setAuthToken(null);
+    setTokenInput("");
+    setHasActiveToken(false);
+    setIsAuthOpen(false);
+    triggerRefresh();
+  }
 
   return (
     <main className="min-h-screen bg-[#100904] text-cream">
@@ -34,7 +73,7 @@ export default function HomePage() {
                 Praxis
               </span>
               <span className="text-[10px] uppercase tracking-wider text-ember bg-surface-bark/60 border border-surface-cork px-2 py-0.5 rounded-full font-mono">
-                M4 Operational
+                M5 Release Ready
               </span>
             </div>
             <p className="text-xs text-cream-muted">
@@ -42,8 +81,20 @@ export default function HomePage() {
             </p>
           </div>
 
-          {/* Owner Identity Badge */}
-          <div className="flex items-center gap-2 self-start sm:self-auto">
+          {/* Tenant Identity & Access Controls */}
+          <div className="flex items-center gap-2.5 self-start sm:self-auto">
+            {/* Bearer Token Trigger */}
+            <button
+              type="button"
+              onClick={() => setIsAuthOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-surface-cork/80 bg-[#160d07] hover:border-surface-cork text-cream-muted hover:text-cream text-[11px] font-mono transition-colors"
+              title="Configure authentication bearer token"
+            >
+              <Key className={`h-3 w-3 ${hasActiveToken ? "text-emerald-400" : "text-cream-muted"}`} />
+              <span>{hasActiveToken ? "Token Active" : "No Auth"}</span>
+            </button>
+
+            {/* Owner Identity Badge */}
             {isEditingOwner ? (
               <form
                 onSubmit={(e) => {
@@ -69,7 +120,7 @@ export default function HomePage() {
                 type="button"
                 onClick={() => setIsEditingOwner(true)}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-surface-cork/80 bg-[#160d07] hover:border-surface-cork text-cream-muted hover:text-cream text-[11px] font-mono transition-colors"
-                title="Click to change owner identity"
+                title="Click to edit tenant owner identity"
               >
                 <User className="h-3 w-3 text-ember" />
                 <span>{ownerId}</span>
@@ -129,6 +180,69 @@ export default function HomePage() {
           </Tabs>
         </section>
       </div>
+
+      {/* Authentication & Access Token Dialog */}
+      <Dialog open={isAuthOpen} onOpenChange={setIsAuthOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <div className="flex items-center gap-2 text-ember">
+              <Lock className="h-4 w-4" />
+              <DialogTitle>Authentication & Tenant Security</DialogTitle>
+            </div>
+            <DialogDescription className="text-xs text-cream-muted">
+              When authentication is configured on the backend via PRAXIS_AUTH_TOKENS, requests require a valid Bearer token matching the claimed tenant owner.
+            </DialogDescription>
+          </DialogHeader>
+
+          <form onSubmit={handleSaveToken} className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase font-mono tracking-wider text-cream-muted block">
+                Bearer Access Token:
+              </label>
+              <Input
+                type="password"
+                value={tokenInput}
+                onChange={(e) => setTokenInput(e.target.value)}
+                placeholder="Enter secret bearer token..."
+                className="bg-[#100904] border-surface-cork text-xs font-mono"
+                autoFocus
+              />
+            </div>
+
+            <div className="p-3 rounded-lg bg-[#140c06] border border-surface-cork/50 text-[11px] text-cream-muted space-y-1">
+              <span className="text-[10px] font-bold uppercase text-cream block">
+                Current Tenant Scope:
+              </span>
+              <p className="font-mono text-cream/90">{ownerId}</p>
+              <p className="text-[10px] text-cream-muted/70 pt-1">
+                Note: In local mode without authentication tokens configured, any tenant identifier is accepted.
+              </p>
+            </div>
+
+            <DialogFooter className="gap-2 sm:gap-0">
+              {hasActiveToken && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleClearToken}
+                  className="border-red-900/60 text-red-300 hover:bg-red-950/40"
+                >
+                  Clear Token
+                </Button>
+              )}
+              <Button
+                type="submit"
+                size="sm"
+                className="bg-surface-bark text-cream border border-surface-cork hover:bg-[#4a301e]"
+              >
+                <Check className="h-3 w-3 mr-1" />
+                Save & Apply
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* Editorial Micro Footer */}
       <footer className="border-t border-surface-cork/40 border-dashed py-8 mt-16 text-center text-[10px] text-cream-muted uppercase tracking-widest">

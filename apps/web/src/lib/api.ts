@@ -153,6 +153,57 @@ export class TransportError extends Error {
   }
 }
 
+/**
+ * Authentication failure error module.
+ * Represents missing or unverified tenant credentials across the transport seam.
+ */
+export class AuthenticationError extends TransportError {
+  constructor(errorDetail: TransportErrorDetail) {
+    super(401, errorDetail);
+    this.name = "AuthenticationError";
+  }
+}
+
+/**
+ * Authorization failure error module.
+ * Represents valid credentials attempting to claim an unpermitted tenant identity.
+ */
+export class ForbiddenError extends TransportError {
+  constructor(errorDetail: TransportErrorDetail) {
+    super(403, errorDetail);
+    this.name = "ForbiddenError";
+  }
+}
+
+let activeAuthToken: string | null = null;
+
+if (typeof window !== "undefined") {
+  try {
+    activeAuthToken = window.localStorage.getItem("praxis_auth_token");
+  } catch {
+    // Ignore storage access restrictions in hardened environments
+  }
+}
+
+export function setAuthToken(token: string | null): void {
+  activeAuthToken = token && token.trim() ? token.trim() : null;
+  if (typeof window !== "undefined") {
+    try {
+      if (activeAuthToken) {
+        window.localStorage.setItem("praxis_auth_token", activeAuthToken);
+      } else {
+        window.localStorage.removeItem("praxis_auth_token");
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+}
+
+export function getAuthToken(): string | null {
+  return activeAuthToken;
+}
+
 const DEFAULT_BASE_PATH = "/api/backend";
 
 async function requestJson<T>(
@@ -164,6 +215,9 @@ async function requestJson<T>(
   const headers = new Headers(options.headers);
   if (!headers.has("Content-Type") && options.body) {
     headers.set("Content-Type", "application/json");
+  }
+  if (activeAuthToken && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${activeAuthToken}`);
   }
 
   const response = await fetch(url, {
@@ -190,6 +244,13 @@ async function requestJson<T>(
       }
     } catch {
       errorDetail = { message: `Request failed with status ${response.status}: ${response.statusText}` };
+    }
+
+    if (response.status === 401) {
+      throw new AuthenticationError(errorDetail);
+    }
+    if (response.status === 403) {
+      throw new ForbiddenError(errorDetail);
     }
     throw new TransportError(response.status, errorDetail);
   }
@@ -327,4 +388,7 @@ export const clientAdapter = {
       }),
     });
   },
+
+  setAuthToken,
+  getAuthToken,
 };
