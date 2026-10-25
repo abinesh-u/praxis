@@ -293,7 +293,7 @@ def test_lock_acquisition_timeout_raises_clear_error(tmp_path, monkeypatch):
     ctx = multiprocessing.get_context("spawn")
     p = ctx.Process(target=_lock_holder_worker, args=(str(db_file), 2.0))
     p.start()
-    time.sleep(0.1)  # wait for lock to be acquired
+    time.sleep(0.4)  # wait for spawned process to start and acquire lock
 
     try:
         url = f"sqlite:///{db_file}"

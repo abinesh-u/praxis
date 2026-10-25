@@ -228,6 +228,19 @@ def _verify_legacy_schema_fingerprint(connection: sqlite3.Connection) -> bool:
     return True
 
 
+def _exec_script_in_tx(connection: sqlite3.Connection, script: str) -> None:
+    """Execute SQL DDL statements while preserving the active transaction lock.
+
+    Note: sqlite3.Connection.executescript() implicitly issues COMMIT before execution,
+    which releases SQLite transaction locks and exposes concurrent startup races.
+    Executing non-empty statements individually preserves the active transaction.
+    """
+    for statement in script.strip().split(";"):
+        stmt = statement.strip()
+        if stmt:
+            connection.execute(stmt)
+
+
 def _apply_migrations(connection: sqlite3.Connection) -> None:
     """Apply any unapplied migrations in order within transactional boundaries."""
     try:
@@ -249,7 +262,7 @@ def _apply_migrations(connection: sqlite3.Connection) -> None:
                     raise PersistenceConfigurationError(
                         "Legacy database schema does not match expected baseline format"
                     )
-                connection.executescript(MIGRATIONS[0].sql)
+                _exec_script_in_tx(connection, MIGRATIONS[0].sql)
                 connection.execute(
                     "INSERT OR IGNORE INTO schema_migrations (version, description, applied_at) "
                     "VALUES (?, ?, ?)",
@@ -260,7 +273,7 @@ def _apply_migrations(connection: sqlite3.Connection) -> None:
         for migration in MIGRATIONS:
             if migration.version <= current:
                 continue
-            connection.executescript(migration.sql)
+            _exec_script_in_tx(connection, migration.sql)
             connection.execute(
                 "INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)",
                 (migration.version, migration.description, datetime.now(UTC).isoformat()),
@@ -712,10 +725,17 @@ class SQLiteUnitOfWork:
             timeout=timeout_seconds,
         )
         connection.row_factory = sqlite3.Row
+        connection.execute(f"PRAGMA busy_timeout = {self._busy_timeout_ms}")
         connection.execute("PRAGMA foreign_keys = ON")
         if self._database_path != ":memory:":
-            connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute(f"PRAGMA busy_timeout = {self._busy_timeout_ms}")
+            try:
+                current_mode = connection.execute("PRAGMA journal_mode").fetchone()
+                if current_mode and str(current_mode[0]).lower() != "wal":
+                    connection.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError:
+                # If another concurrent process holds an exclusive lock during startup,
+                # it will establish WAL mode; downstream transactions will wait on busy_timeout.
+                pass
         return connection
 
     def _initialize_schema(self) -> None:

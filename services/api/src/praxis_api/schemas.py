@@ -68,8 +68,8 @@ class ReconcileTaskRequest(ApiModel):
 
 class ExecutionResponse(ApiModel):
     task: TaskResponse
-    attempt_id: UUID
-    attempt_status: str
+    attempt_id: UUID | None = None
+    attempt_status: str | None = None
     outcome_status: str
     output: Any = None
     error: str | None = None
@@ -81,13 +81,15 @@ class ExecutionResponse(ApiModel):
     def from_result(cls, result: ExecuteNextActionResult) -> ExecutionResponse:
         return cls(
             task=TaskResponse.from_entity(result.task, result.action),
-            attempt_id=result.attempt.id,
-            attempt_status=result.attempt.status,
+            attempt_id=result.attempt.id if result.attempt else None,
+            attempt_status=result.attempt.status if result.attempt else None,
             outcome_status=result.outcome.status,
             output=result.outcome.output,
             error=result.outcome.error,
-            provider_request_id=result.attempt.provider_request_id
-            or result.outcome.provider_request_id,
+            provider_request_id=(
+                (result.attempt.provider_request_id if result.attempt else None)
+                or result.outcome.provider_request_id
+            ),
             approval=ApprovalResponse.from_entity(result.approval_request)
             if result.approval_request
             else None,
