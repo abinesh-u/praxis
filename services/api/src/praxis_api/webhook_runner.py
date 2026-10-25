@@ -49,13 +49,9 @@ class WebhookRunner:
         if parsed.username or parsed.password:
             return "Webhook destination must not contain credentials"
         host = parsed.hostname.lower()
-        try:
-            address = ipaddress.ip_address(host)
-        except ValueError:
-            address = None
-        if host in {"localhost", "localhost.localdomain"} or (
-            address and (address.is_private or address.is_loopback or address.is_link_local)
-        ):
+        private_destination = WebhookRunner._is_restricted_host(host)
+        local_override = WebhookRunner._local_override_enabled()
+        if private_destination and not local_override:
             return "Webhook destination points to a restricted private address"
         configured_hosts = os.getenv("PRAXIS_WEBHOOK_ALLOWED_HOSTS")
         if configured_hosts:
@@ -65,7 +61,79 @@ class WebhookRunner:
         return None
 
     def _destination_error(self) -> str | None:
-        return self._validate_destination(self.endpoint)
+        error = self._validate_destination(self.endpoint)
+        if error:
+            return error
+        if (
+            os.getenv("PRAXIS_WEBHOOK_AUTH_TOKEN") or os.getenv("PRAXIS_WEBHOOK_STATUS_AUTH_TOKEN")
+        ) and self._requires_tls(self.endpoint):
+            return "Authenticated external webhook destinations must use HTTPS"
+        return None
+
+    @staticmethod
+    def _local_override_enabled() -> bool:
+        return os.getenv(
+            "PRAXIS_WEBHOOK_ALLOW_PRIVATE_DESTINATIONS"
+        ) == "m1-local-only" and os.getenv("APP_ENV") in {"development", "test"}
+
+    @staticmethod
+    def _is_restricted_host(host: str) -> bool:
+        host = host.lower()
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            address = None
+        return host in {"localhost", "localhost.localdomain"} or (
+            address is not None
+            and (address.is_private or address.is_loopback or address.is_link_local)
+        )
+
+    @staticmethod
+    def _requires_tls(url: str | None) -> bool:
+        if not url:
+            return False
+        parsed = urlparse(url)
+        if parsed.scheme != "http" or not parsed.hostname:
+            return False
+        local_plaintext = WebhookRunner._local_override_enabled() and (
+            WebhookRunner._is_restricted_host(parsed.hostname)
+        )
+        return not local_plaintext
+
+    @staticmethod
+    def _provider_headers(idempotency_key: str) -> dict[str, str]:
+        headers = {"Idempotency-Key": idempotency_key}
+        token = os.getenv("PRAXIS_WEBHOOK_AUTH_TOKEN")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+    @staticmethod
+    def _same_origin(left: str | None, right: str | None) -> bool:
+        if not left or not right:
+            return False
+        first, second = urlparse(left), urlparse(right)
+        return (
+            first.scheme,
+            first.hostname,
+            first.port or (443 if first.scheme == "https" else 80),
+        ) == (
+            second.scheme,
+            second.hostname,
+            second.port or (443 if second.scheme == "https" else 80),
+        )
+
+    def _status_headers(self, idempotency_key: str, status_endpoint: str) -> dict[str, str] | None:
+        status_token = os.getenv("PRAXIS_WEBHOOK_STATUS_AUTH_TOKEN")
+        dispatch_token = os.getenv("PRAXIS_WEBHOOK_AUTH_TOKEN")
+        if status_token:
+            return {
+                "Idempotency-Key": idempotency_key,
+                "Authorization": f"Bearer {status_token}",
+            }
+        if dispatch_token and not self._same_origin(self.endpoint, status_endpoint):
+            return None
+        return self._provider_headers(idempotency_key)
 
     async def _resolved_destination_error(self, url: str) -> str | None:
         parsed = urlparse(url)
@@ -80,7 +148,10 @@ class WebhookRunner:
                 address = ipaddress.ip_address(value)
             except ValueError:
                 continue
-            if address.is_private or address.is_loopback or address.is_link_local:
+            local_override = self._local_override_enabled()
+            if (
+                address.is_private or address.is_loopback or address.is_link_local
+            ) and not local_override:
                 return "Webhook destination resolved to a restricted private address"
         return None
 
@@ -148,7 +219,7 @@ class WebhookRunner:
                         "attempt_id": str(attempt_id),
                         "payload": payload,
                     },
-                    headers={"Idempotency-Key": str(attempt_id)},
+                    headers=self._provider_headers(str(attempt_id)),
                 ) as response,
             ):
                 provider_request_id = response.headers.get("X-Operation-ID")
@@ -178,6 +249,13 @@ class WebhookRunner:
             return AgentRunOutcome(
                 status="outcome_unknown",
                 error=f"Provider HTTP {response.status_code}; reconcile before retrying",
+            )
+        if provider_status == "failed" and document.get("failure_final") is True:
+            return AgentRunOutcome(
+                status="failed",
+                error=document.get("error") or "Provider reported execution failure",
+                output=document,
+                provider_request_id=str(operation_id) if operation_id else provider_request_id,
             )
         if provider_status == "completed":
             evidence = Evidence.machine_verified(
@@ -229,6 +307,22 @@ class WebhookRunner:
         status_error = self._validate_destination(status_endpoint) if status_endpoint else None
         if status_error:
             return AgentRunOutcome(status="outcome_unknown", error=status_error)
+        if (
+            status_endpoint
+            and os.getenv("PRAXIS_WEBHOOK_STATUS_AUTH_TOKEN")
+            and self._requires_tls(status_endpoint)
+        ):
+            return AgentRunOutcome(
+                status="outcome_unknown",
+                error="Authenticated external status destinations must use HTTPS",
+            )
+        status_base = status_endpoint or self.endpoint
+        headers = self._status_headers(idempotency_key, status_base)
+        if headers is None:
+            return AgentRunOutcome(
+                status="outcome_unknown",
+                error="Status endpoint origin differs; configure a separate status credential",
+            )
         if status_endpoint:
             url = status_endpoint.rstrip("/") + "/" + quote(provider_request_id, safe="")
         else:
@@ -243,7 +337,7 @@ class WebhookRunner:
                     follow_redirects=False,
                     transport=self.transport,
                 ) as client,
-                client.stream("GET", url, headers={"Idempotency-Key": idempotency_key}) as response,
+                client.stream("GET", url, headers=headers) as response,
             ):
                 document, parse_error = await self._read_json(response)
                 status_code = response.status_code

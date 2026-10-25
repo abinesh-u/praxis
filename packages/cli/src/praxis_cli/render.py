@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -116,32 +117,116 @@ def render_attempt_summary(attempt: ExecutionAttempt, user_tz: str = "UTC") -> N
     )
 
 
-def render_spotlight(item: AgendaTaskItem, user_tz: str = "UTC") -> None:
-    """Render the single immediate next action in a prominent calm panel."""
-    task = item.task
-    action = item.current_next_action
+PRAXIS_ASCII_LOGO = r"""  ██████╗ ██████╗  █████╗ ██╗  ██╗██╗███████╗
+  ██╔══██╗██╔══██╗██╔══██╗╚██╗██╔╝██║██╔════╝
+  ██████╔╝██████╔╝███████║ ╚███╔╝ ██║███████╗
+  ██╔═══╝ ██╔══██╗██╔══██║ ██╔██╗ ██║╚════██║
+  ██║     ██║  ██║██║  ██║██╔╝ ██╗██║███████║
+  ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚══════╝"""
 
-    pri_label, pri_style = PRIORITY_STYLES.get(task.priority, ("", COLORS["dim"]))
-    due_str = format_dt(task.due_date, user_tz) if task.due_date else "No deadline"
+
+def render_spotlight(item: AgendaTaskItem | dict[str, Any], user_tz: str = "UTC") -> None:
+    """Render the single immediate next action in a prominent calm panel."""
+    if isinstance(item, dict):
+        task_data = item.get("task") if isinstance(item.get("task"), dict) else item
+        task_title = str(task_data.get("title", "Active Task"))
+        next_action_data = task_data.get("current_next_action") or {}
+        action_desc = (
+            next_action_data.get("description") if isinstance(next_action_data, dict) else None
+        )
+        tid = short_id(task_data.get("id", "")) if task_data.get("id") else None
+        pri_str = task_data.get("priority", "routine")
+        pri_enum = (
+            Priority(pri_str)
+            if isinstance(pri_str, str) and pri_str in [p.value for p in Priority]
+            else Priority.ROUTINE
+        )
+        pri_label, pri_style = PRIORITY_STYLES.get(pri_enum, ("", COLORS["dim"]))
+        due_raw = task_data.get("due_date")
+        due_str = str(due_raw) if due_raw else "No deadline"
+        subtitle = (
+            f"[grey62]Run 'praxis do {tid}' to execute with agent assistance[/grey62]"
+            if tid
+            else "[grey62]Run 'praxis do <id>' to execute with agent assistance[/grey62]"
+        )
+        defer_str = None
+    else:
+        task = item.task
+        task_title = task.title
+        action = item.current_next_action
+        action_desc = action.description if action else None
+        tid = short_id(task.id)
+        pri_label, pri_style = PRIORITY_STYLES.get(task.priority, ("", COLORS["dim"]))
+        due_str = format_dt(task.due_date, user_tz) if task.due_date else "No deadline"
+        subtitle = f"[grey62]Run 'praxis do {tid}' to execute with agent assistance[/grey62]"
+        defer_str = format_dt(task.deferred_until, user_tz) if task.deferred_until else None
 
     content = Text()
-    content.append(f"{task.title}\n", style="bold white")
-    if action:
-        content.append(f"Next Action: {action.description}\n", style=f"bold {COLORS['focus']}")
+    content.append(f"{task_title}\n", style="bold white")
+    if action_desc:
+        content.append(f"Next Action: {action_desc}\n", style=f"bold {COLORS['focus']}")
     content.append(f"{pri_label}  •  Due: {due_str}", style=pri_style)
-
-    if task.deferred_until:
-        defer_str = format_dt(task.deferred_until, user_tz)
+    if defer_str:
         content.append(f"  •  Deferred until: {defer_str}", style=COLORS["deferred"])
 
     panel = Panel(
         content,
         title="[bold sky_blue1]🎯 RIGHT NOW[/bold sky_blue1]",
-        subtitle="[grey62]Run 'praxis do <id>' to execute with agent assistance[/grey62]",
+        subtitle=subtitle,
         border_style=COLORS["focus"],
         padding=(1, 2),
     )
     console.print(panel)
+
+
+def render_launch_screen(
+    profile: str,
+    timezone: str,
+    storage_desc: str,
+    ai_status: str,
+    spotlight_item: AgendaTaskItem | dict[str, Any] | None = None,
+) -> None:
+    """Render the Praxis launch screen with logo, telemetry, spotlight, and quickstart."""
+    console.print()
+    console.print(PRAXIS_ASCII_LOGO, style="bold sky_blue1")
+    console.print()
+    console.print(
+        "  [bold white]Praxis[/bold white] "
+        "[grey62]— Personal AI Execution Partner  (v0.1.0)[/grey62]"
+    )
+    console.print(
+        "  [italic grey62]\"You don't need another app to manage your tasks. "
+        'You need help actually doing them."[/italic grey62]\n'
+    )
+
+    telemetry = Table(box=None, show_header=False, padding=(0, 2), collapse_padding=True)
+    telemetry.add_column("Key1", style="grey62")
+    telemetry.add_column("Val1", style="bold white")
+    telemetry.add_column("Key2", style="grey62")
+    telemetry.add_column("Val2", style="bold white")
+    telemetry.add_row("Profile:", profile, "Timezone:", timezone)
+    telemetry.add_row("Storage:", storage_desc, "AI Engine:", ai_status)
+
+    console.print(telemetry)
+    console.print()
+
+    if spotlight_item is not None:
+        render_spotlight(spotlight_item, user_tz=timezone)
+        console.print()
+    else:
+        console.print("  ✨ [grey62]No active tasks on your agenda right now.[/grey62]\n")
+
+    shortcuts = Table(box=None, show_header=False, padding=(0, 2))
+    shortcuts.add_column("Cmd", style="bold sky_blue1")
+    shortcuts.add_column("Desc", style="grey62")
+    shortcuts.add_row('praxis capture "<text>"', "Capture commitment and extract next action")
+    shortcuts.add_row("praxis today", "View prioritized agenda and waiting queue")
+    shortcuts.add_row("praxis do <short-id>", "Execute immediate next action with agent assistance")
+    shortcuts.add_row("praxis --help", "Display all commands and flags")
+
+    console.print("  [bold white]Quick Commands:[/bold white]")
+    console.print(shortcuts)
+    console.print()
 
 
 def render_agenda_table(

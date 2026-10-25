@@ -5,6 +5,11 @@ users. The automated suite validates the lifecycle against a deterministic
 provider transport; a disposable real-provider run is still required before
 production use.
 
+M1 local evidence is recorded in
+[m1-local-recovery-evidence-2026-10-23.md](m1-local-recovery-evidence-2026-10-23.md).
+M2 operator procedures are documented in
+[m2-operational-recovery.md](m2-operational-recovery.md).
+
 ## Provider and network
 
 - [ ] Provider documents `Idempotency-Key` retention and duplicate-request
@@ -33,8 +38,10 @@ production use.
 
 ## Persistence and recovery
 
-- [ ] SQLite backups are scheduled and a restore has been tested.
-- [ ] Audit retention and access are defined for the deployment.
+- [ ] SQLite backups are scheduled and a restore has been tested with
+      `scripts/sqlite_backup.py`.
+- [ ] Audit retention and access are defined; pruning uses an explicit,
+      reviewed cutoff and preserves active-incident records.
 - [ ] After a process restart, attempts retain their attempt ID, provider
       operation ID, idempotency linkage, status, evidence, and recovery text.
 - [ ] The provider never returns an operation ID: keep the attempt
@@ -60,6 +67,31 @@ git diff --check
 The controlled-provider test must independently assert the provider call
 sequence (`POST`, then `GET`) rather than inferring dispatch from Praxis's
 internal execution-attempt records.
+
+For M1 provider validation, use [the provider contract](m1-provider-contract.md),
+[the validation matrix](m1-validation-matrix.md), and the two-phase helper:
+
+```bash
+PRAXIS_API_URL=http://localhost:8000 \
+PRAXIS_OWNER_ID=... \
+PRAXIS_TASK_ID=... \
+PRAXIS_API_TOKEN=... \
+PRAXIS_APPROVAL_TOKEN=... \
+./.venv/bin/python scripts/m1_validate_provider.py dispatch \
+  --idempotency-key m1-disposable-001
+
+PRAXIS_API_URL=http://localhost:8000 \
+PRAXIS_OWNER_ID=... \
+PRAXIS_TASK_ID=... \
+PRAXIS_API_TOKEN=... \
+./.venv/bin/python scripts/m1_validate_provider.py reconcile \
+  --attempt-id <attempt-id-from-dispatch>
+```
+
+The helper performs one dispatch or one read-only reconciliation only; it does
+not retry uncertain actions. Its API client timeout defaults to 30 seconds so
+Praxis can finish recording a provider timeout; override it with
+`PRAXIS_API_TIMEOUT` when the deployment contract requires a different bound.
 
 ## Manual unresolved-attempt procedure
 

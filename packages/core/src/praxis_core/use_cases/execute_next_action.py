@@ -247,7 +247,13 @@ class ExecuteNextActionUseCase:
                     outcome.error or "External outcome requires reconciliation",
                     outcome.provider_request_id,
                 )
-                task.recovery_suggestion = "Reconcile the provider outcome before retrying"
+                if outcome.provider_request_id:
+                    task.recovery_suggestion = "Reconcile the provider outcome before retrying"
+                else:
+                    task.recovery_suggestion = (
+                        "Provider operation ID is unavailable; inspect the provider manually "
+                        "and do not retry until the outcome is established"
+                    )
 
             else:  # failed
                 err_msg = outcome.error or "Tool execution failed"

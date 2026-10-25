@@ -24,6 +24,36 @@ def test_destination_validation_blocks_ssrf_primitives(monkeypatch):
     assert WebhookRunner._validate_destination("https://hooks.example.com/action") is None
 
 
+def test_private_override_requires_explicit_development_environment(monkeypatch):
+    monkeypatch.setenv("PRAXIS_WEBHOOK_ALLOW_PRIVATE_DESTINATIONS", "m1-local-only")
+    monkeypatch.delenv("APP_ENV", raising=False)
+    assert WebhookRunner._validate_destination("http://127.0.0.1/action")
+    monkeypatch.setenv("APP_ENV", "development")
+    assert WebhookRunner._validate_destination("http://127.0.0.1/action") is None
+
+
+def test_authenticated_external_http_destination_is_rejected(monkeypatch):
+    monkeypatch.setenv("PRAXIS_WEBHOOK_AUTH_TOKEN", "secret")
+    monkeypatch.setenv("APP_ENV", "production")
+    assert "HTTPS" in (WebhookRunner("http://hooks.example.com/action")._destination_error() or "")
+
+
+def test_local_override_does_not_allow_authenticated_public_http(monkeypatch):
+    monkeypatch.setenv("PRAXIS_WEBHOOK_AUTH_TOKEN", "secret")
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("PRAXIS_WEBHOOK_ALLOW_PRIVATE_DESTINATIONS", "m1-local-only")
+    error = WebhookRunner("http://hooks.example.com/action")._destination_error()
+    assert error is not None
+    assert "HTTPS" in error
+
+
+def test_authenticated_loopback_http_is_allowed_for_local_harness(monkeypatch):
+    monkeypatch.setenv("PRAXIS_WEBHOOK_AUTH_TOKEN", "secret")
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("PRAXIS_WEBHOOK_ALLOW_PRIVATE_DESTINATIONS", "m1-local-only")
+    assert WebhookRunner("http://127.0.0.1:8765/action")._destination_error() is None
+
+
 @pytest.mark.anyio
 async def test_reconciliation_without_provider_id_never_constructs_a_lookup():
     task = Task(owner_id="owner", title="Notify")
@@ -41,6 +71,76 @@ async def test_reconciliation_without_provider_id_never_constructs_a_lookup():
 
 
 @pytest.mark.anyio
+async def test_status_origin_cannot_receive_dispatch_credential(monkeypatch):
+    monkeypatch.setenv("PRAXIS_WEBHOOK_AUTH_TOKEN", "dispatch-secret")
+    monkeypatch.setenv("PRAXIS_WEBHOOK_STATUS_URL", "https://status.example.com/operations")
+    task = Task(owner_id="owner", title="Notify")
+    action = task.add_next_action("Send notification", tool_hint="webhook_post")
+    outcome = await WebhookRunner("https://hooks.example.com/action").reconcile_action(
+        attempt_id=uuid4(),
+        task=task,
+        action=action,
+        owner_id="owner",
+        provider_request_id="op-1",
+        idempotency_key="attempt-1",
+    )
+    assert outcome.status == "outcome_unknown"
+    assert "separate status credential" in (outcome.error or "")
+
+
+@pytest.mark.anyio
+async def test_status_origin_uses_separate_credential(monkeypatch):
+    monkeypatch.setenv("PRAXIS_WEBHOOK_AUTH_TOKEN", "dispatch-secret")
+    monkeypatch.setenv("PRAXIS_WEBHOOK_STATUS_AUTH_TOKEN", "status-secret")
+    monkeypatch.setenv("PRAXIS_WEBHOOK_STATUS_URL", "https://status.example.com/operations")
+    captured: list[httpx.Request] = []
+
+    async def provider(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"operation_id": "op-1", "status": "completed"})
+
+    runner = WebhookRunner(
+        "https://hooks.example.com/action", transport=httpx.MockTransport(provider)
+    )
+    monkeypatch.setattr(runner, "_resolved_destination_error", lambda _url: _none())
+    task = Task(owner_id="owner", title="Notify")
+    action = task.add_next_action("Send notification", tool_hint="webhook_post")
+    outcome = await runner.reconcile_action(
+        attempt_id=uuid4(),
+        task=task,
+        action=action,
+        owner_id="owner",
+        provider_request_id="op-1",
+        idempotency_key="attempt-1",
+    )
+    assert outcome.status == "completed"
+    assert captured[0].headers["Authorization"] == "Bearer status-secret"
+
+
+@pytest.mark.anyio
+async def test_authoritative_dispatch_failure_is_not_marked_unknown(monkeypatch):
+    async def provider(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"status": "failed", "failure_final": True, "error": "rejected"},
+            headers={"X-Operation-ID": "op-rejected"},
+            request=request,
+        )
+
+    runner = WebhookRunner(
+        "https://hooks.example.com/action", transport=httpx.MockTransport(provider)
+    )
+    monkeypatch.setattr(runner, "_resolved_destination_error", lambda _url: _none())
+    task = Task(owner_id="owner", title="Notify")
+    action = task.add_next_action("Send notification", tool_hint="webhook_post")
+    outcome = await runner.execute_action(
+        attempt_id=uuid4(), task=task, action=action, owner_id="owner", approval_token="approved"
+    )
+    assert outcome.status == "failed"
+    assert outcome.provider_request_id == "op-rejected"
+
+
+@pytest.mark.anyio
 async def test_invalid_provider_id_is_not_used_as_a_status_path():
     task = Task(owner_id="owner", title="Notify")
     action = task.add_next_action("Send notification", tool_hint="webhook_post")
@@ -54,6 +154,40 @@ async def test_invalid_provider_id_is_not_used_as_a_status_path():
     )
     assert outcome.status == "outcome_unknown"
     assert "invalid" in (outcome.error or "")
+
+
+@pytest.mark.anyio
+async def test_provider_redirect_is_not_followed(monkeypatch):
+    calls: list[str] = []
+
+    async def provider(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(
+            302,
+            headers={"Location": "https://unapproved.example.com/redirected"},
+            request=request,
+        )
+
+    runner = WebhookRunner(
+        "https://hooks.example.com/action", transport=httpx.MockTransport(provider)
+    )
+
+    async def no_dns(_url: str) -> None:
+        return None
+
+    monkeypatch.setattr(runner, "_resolved_destination_error", no_dns)
+    task = Task(owner_id="owner", title="Notify")
+    action = task.add_next_action("Send notification", tool_hint="webhook_post")
+    outcome = await runner.execute_action(
+        attempt_id=uuid4(),
+        task=task,
+        action=action,
+        owner_id="owner",
+        approval_token="approved-token",
+    )
+
+    assert outcome.status == "outcome_unknown"
+    assert calls == ["https://hooks.example.com/action"]
 
 
 @pytest.mark.anyio

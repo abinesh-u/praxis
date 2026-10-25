@@ -248,6 +248,26 @@ class TestExecuteNextActionUseCase:
         assert len(runner.invocations) == 1
 
     @pytest.mark.anyio
+    async def test_missing_provider_id_gives_manual_recovery_guidance(self):
+        uow = InMemoryUnitOfWork()
+        task = Task(owner_id="user_1", title="Provider without operation ID")
+        task.add_next_action("Send provider notification", tool_hint="webhook_post")
+        runner = MockAgentRunner(AgentRunOutcome(status="outcome_unknown"))
+        use_case = ExecuteNextActionUseCase(uow=uow, runner=runner)
+        async with uow:
+            await uow.tasks.save(task)
+            await uow.commit()
+
+        result = await use_case.execute(
+            ExecuteNextActionCommand(task_id=task.id, owner_id="user_1", idempotency_key="no-id")
+        )
+
+        assert result.attempt.status == "outcome_unknown"
+        assert result.attempt.provider_request_id is None
+        assert "operation ID is unavailable" in (result.task.recovery_suggestion or "")
+        assert "do not retry" in (result.task.recovery_suggestion or "")
+
+    @pytest.mark.anyio
     async def test_reconciliation_observes_and_completes_without_dispatch(self):
         uow = InMemoryUnitOfWork()
         task = Task(owner_id="user_1", title="Reconcile provider")
