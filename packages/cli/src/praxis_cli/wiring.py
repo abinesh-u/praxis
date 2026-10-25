@@ -7,6 +7,7 @@ from praxis_core.entities.commitment import Commitment
 from praxis_core.entities.task import Task
 from praxis_core.errors import DomainError, EntityNotFoundError
 from praxis_core.models.extractor import NebiusTaskExtractor
+from praxis_core.persistence import SQLiteUnitOfWork
 from praxis_core.ports.agent_runner import AgentRunner
 from praxis_core.ports.clock import SystemClock
 from praxis_core.ports.task_extractor import TaskExtractor
@@ -22,16 +23,19 @@ from praxis_core.use_cases import (
 )
 
 from praxis_cli.config import CliConfig
-from praxis_cli.store import JsonFileUnitOfWork
+from praxis_cli.migration import JsonStoreMigrator
 
 
 class AmbiguousIdentifierError(DomainError):
     """Raised when a short ID prefix matches more than one entity."""
 
 
-def get_uow(config: CliConfig) -> JsonFileUnitOfWork:
-    """Build a JsonFileUnitOfWork for the resolved profile storage path."""
-    return JsonFileUnitOfWork(store_path=config.store_path)
+def get_uow(config: CliConfig) -> SQLiteUnitOfWork:
+    """Build SQLiteUnitOfWork for the resolved storage path, migrating legacy JSON if present."""
+    config.db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if config.legacy_json_path.exists():
+        JsonStoreMigrator.migrate_sync(config.legacy_json_path, config.db_url)
+    return SQLiteUnitOfWork(config.db_url)
 
 
 def get_task_extractor() -> TaskExtractor:
@@ -85,7 +89,7 @@ def make_execute_next_action_use_case(
 
 
 async def resolve_task_by_short_id(uow: UnitOfWork, short_id: str, owner_id: str) -> Task:
-    """Resolve an 8-character prefix strictly within the active owner boundary."""
+    """Resolve an 8-character prefix strictly within the active owner scope."""
     clean_prefix = short_id.strip().lower().replace("-", "")
     matches = await uow.tasks.find_by_id_prefix(clean_prefix, owner_id)
     if not matches:
@@ -100,30 +104,26 @@ async def resolve_task_by_short_id(uow: UnitOfWork, short_id: str, owner_id: str
 async def resolve_commitment_by_short_id(
     uow: UnitOfWork, short_id: str, owner_id: str
 ) -> Commitment:
-    """Resolve an 8-character prefix for commitments strictly within the active owner boundary."""
+    """Resolve an 8-character prefix for commitments strictly within the active owner scope."""
     clean_prefix = short_id.strip().lower().replace("-", "")
-    # Find matching commitment across owner records
-    if hasattr(uow.commitments, "_commitments"):
+    if hasattr(uow.commitments, "find_by_id_prefix"):
+        matches = await uow.commitments.find_by_id_prefix(clean_prefix, owner_id)
+    else:
+        commitments = await uow.commitments.list_by_owner(owner_id)
         matches = [
-            Commitment.model_validate(raw)
-            for raw in uow.commitments._commitments.values()
-            if raw.get("owner_id") == owner_id
-            and str(raw.get("id", "")).replace("-", "").lower().startswith(clean_prefix)
+            c for c in commitments if str(c.id).replace("-", "").lower().startswith(clean_prefix)
         ]
-        if not matches:
-            raise EntityNotFoundError("Commitment", short_id)
-        if len(matches) > 1:
-            raise AmbiguousIdentifierError(
-                f"Short ID '{short_id}' matches {len(matches)} commitments."
-            )
-        return matches[0]
-    raise EntityNotFoundError("Commitment", short_id)
+    if not matches:
+        raise EntityNotFoundError("Commitment", short_id)
+    if len(matches) > 1:
+        raise AmbiguousIdentifierError(f"Short ID '{short_id}' matches {len(matches)} commitments.")
+    return matches[0]
 
 
 async def resolve_approval_by_short_id(
     uow: UnitOfWork, short_id: str, owner_id: str
 ) -> ApprovalRequest:
-    """Resolve an 8-character prefix for approvals strictly within the active owner boundary."""
+    """Resolve an 8-character prefix for approvals strictly within the active owner scope."""
     clean_prefix = short_id.strip().lower().replace("-", "")
     pending = await uow.approvals.list_pending(owner_id)
     matches = [a for a in pending if str(a.id).replace("-", "").lower().startswith(clean_prefix)]

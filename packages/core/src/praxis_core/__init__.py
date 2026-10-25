@@ -49,6 +49,7 @@ from praxis_core.execution import (
     ActionRiskPolicy,
     EvidenceSynthesizer,
 )
+from praxis_core.persistence import SQLiteUnitOfWork
 from praxis_core.ports import (
     ActionDispatcher,
     AgentRunner,
@@ -173,6 +174,7 @@ __all__ = [
     "ResolveApprovalUseCase",
     "SelfDependencyError",
     "SourceChannel",
+    "SQLiteUnitOfWork",
     "StatusReconciler",
     "SystemClock",
     "Task",

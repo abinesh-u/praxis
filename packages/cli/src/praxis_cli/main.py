@@ -37,7 +37,7 @@ app = typer.Typer(
 async def _launch(profile: str | None = None, api: bool = False) -> None:
     cfg = resolve_config(profile_override=profile)
     is_remote = api or bool(os.getenv("PRAXIS_API_URL"))
-    storage_desc = f"API: {cfg.api_url}" if is_remote else f"Local: {cfg.store_path.parent}"
+    storage_desc = f"API: {cfg.api_url}" if is_remote else f"Local: {cfg.db_path.parent}"
     api_key = os.getenv("NEBIUS_API_KEY")
     ai_status = "Nebius [online]" if api_key else "Offline Fallback (ready)"
 
