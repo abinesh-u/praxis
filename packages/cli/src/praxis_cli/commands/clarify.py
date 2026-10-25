@@ -6,15 +6,12 @@ import asyncio
 from typing import Annotated
 
 import typer
-from praxis_core.use_cases import ClarifyCommitmentCommand
+from praxis_core.intake import ClarificationRequest, IntakeStatus
+from praxis_core.use_cases import CaptureCommitmentResult
 
 from praxis_cli.config import resolve_config
 from praxis_cli.render import render_capture_result, render_error
-from praxis_cli.wiring import (
-    get_uow,
-    make_clarify_use_case,
-    resolve_commitment_by_short_id,
-)
+from praxis_cli.wiring import make_commitment_intake_engine
 
 
 def clarify(
@@ -47,19 +44,21 @@ async def _clarify(
 ) -> None:
     try:
         cfg = resolve_config(profile_override=profile, tz_override=timezone)
-        uow = get_uow(cfg)
-
-        async with uow:
-            commitment = await resolve_commitment_by_short_id(uow, commitment_id, cfg.profile)
-
-        use_case = make_clarify_use_case(cfg)
-        cmd = ClarifyCommitmentCommand(
-            commitment_id=commitment.id,
+        engine = make_commitment_intake_engine(cfg)
+        cmd = ClarificationRequest(
+            commitment_id=commitment_id,
             owner_id=cfg.profile,
             clarification_response=response,
             user_timezone=cfg.timezone,
         )
-        result = await use_case.execute(cmd)
+        outcome = await engine.clarify(cmd)
+        result = CaptureCommitmentResult(
+            commitment=outcome.commitment,
+            task=outcome.task,
+            next_action=outcome.next_action,
+            clarification_needed=(outcome.status == IntakeStatus.AWAITING_CLARIFICATION),
+            clarification_prompt=outcome.clarification_prompt,
+        )
         render_capture_result(result, user_tz=cfg.timezone)
         if result.clarification_needed:
             raise typer.Exit(1)

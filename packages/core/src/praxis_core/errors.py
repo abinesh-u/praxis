@@ -165,3 +165,63 @@ class EntityNotFoundError(DomainError):
             f"{entity_type} with ID '{entity_id}' not found",
             {"entity_type": entity_type, "entity_id": str(entity_id)},
         )
+
+
+class AmbiguousIdentifierError(DomainError):
+    """Raised when an identifier or prefix matches multiple entities within an owner scope."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, {"error_type": "AmbiguousIdentifierError"})
+
+
+class IdempotencyConflictError(DomainError):
+    """Raised when an idempotency key is reused with conflicting input."""
+
+    def __init__(self, key: str, reason: str = "Conflicting payload for idempotency key") -> None:
+        self.key = key
+        self.reason = reason
+        super().__init__(
+            f"Idempotency conflict for key '{key}': {reason}",
+            {"key": key, "reason": reason},
+        )
+
+
+class StaleInferenceError(DomainError):
+    """Raised when inference results arrive for a stale commitment revision."""
+
+    def __init__(self, commitment_id: UUID, expected_revision: int, actual_revision: int) -> None:
+        self.commitment_id = commitment_id
+        self.expected_revision = expected_revision
+        self.actual_revision = actual_revision
+        super().__init__(
+            f"Stale inference on commitment {commitment_id}: "
+            f"expected revision {expected_revision}, got {actual_revision}",
+            {
+                "commitment_id": str(commitment_id),
+                "expected_revision": expected_revision,
+                "actual_revision": actual_revision,
+            },
+        )
+
+
+class InvalidClarificationTargetError(DomainError):
+    """Raised when clarification is attempted on an ineligible commitment."""
+
+    def __init__(self, commitment_id: UUID, reason: str) -> None:
+        self.commitment_id = commitment_id
+        self.reason = reason
+        super().__init__(
+            f"Cannot clarify commitment {commitment_id}: {reason}",
+            {"commitment_id": str(commitment_id), "reason": reason},
+        )
+
+
+class IntakeValidationError(DomainError):
+    """Raised when extracted or provided intake proposal violates domain constraints."""
+
+    def __init__(self, reason: str, details: dict[str, Any] | None = None) -> None:
+        self.reason = reason
+        payload = {"reason": reason}
+        if details:
+            payload.update(details)
+        super().__init__(f"Intake validation failed: {reason}", payload)

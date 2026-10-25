@@ -5,7 +5,8 @@ from __future__ import annotations
 from praxis_core.entities.approval import ApprovalRequest
 from praxis_core.entities.commitment import Commitment
 from praxis_core.entities.task import Task
-from praxis_core.errors import DomainError, EntityNotFoundError
+from praxis_core.errors import AmbiguousIdentifierError, EntityNotFoundError
+from praxis_core.intake import CommitmentIntakeEngine
 from praxis_core.models.extractor import NebiusTaskExtractor
 from praxis_core.persistence import SQLiteUnitOfWork
 from praxis_core.ports.agent_runner import AgentRunner
@@ -26,10 +27,6 @@ from praxis_cli.config import CliConfig
 from praxis_cli.migration import JsonStoreMigrator
 
 
-class AmbiguousIdentifierError(DomainError):
-    """Raised when a short ID prefix matches more than one entity."""
-
-
 def get_uow(config: CliConfig) -> SQLiteUnitOfWork:
     """Build SQLiteUnitOfWork for the resolved storage path, migrating legacy JSON if present."""
     config.db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -43,19 +40,31 @@ def get_task_extractor() -> TaskExtractor:
     return NebiusTaskExtractor()
 
 
-def make_capture_use_case(config: CliConfig) -> CaptureCommitmentUseCase:
-    return CaptureCommitmentUseCase(
+def make_commitment_intake_engine(config: CliConfig) -> CommitmentIntakeEngine:
+    return CommitmentIntakeEngine(
         uow=get_uow(config),
         extractor=get_task_extractor(),
         clock=SystemClock(),
     )
 
 
+def make_capture_use_case(config: CliConfig) -> CaptureCommitmentUseCase:
+    engine = make_commitment_intake_engine(config)
+    return CaptureCommitmentUseCase(
+        uow=engine.uow,
+        extractor=engine.extractor,
+        clock=engine.clock,
+        engine=engine,
+    )
+
+
 def make_clarify_use_case(config: CliConfig) -> ClarifyCommitmentUseCase:
+    engine = make_commitment_intake_engine(config)
     return ClarifyCommitmentUseCase(
-        uow=get_uow(config),
-        extractor=get_task_extractor(),
-        clock=SystemClock(),
+        uow=engine.uow,
+        extractor=engine.extractor,
+        clock=engine.clock,
+        engine=engine,
     )
 
 

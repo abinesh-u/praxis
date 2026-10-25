@@ -24,19 +24,23 @@ class Commitment(BaseModel):
     source: SourceChannel = SourceChannel.WEB
     captured_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     idempotency_key: str | None = None
+    idempotency_fingerprint: str | None = None
+    interpretation_revision: int = Field(default=1)
     interpreted_intent: str | None = None
     interpretation_history: list[dict[str, Any]] = Field(default_factory=list)
     clarification_needed: bool = False
     clarification_prompt: str | None = None
 
     def record_interpretation(self, intent: str, metadata: dict[str, Any] | None = None) -> None:
-        """Update interpreted intent and append to history."""
+        """Update interpreted intent and append to history, bumping revision."""
+        self.interpretation_revision += 1
         self.interpreted_intent = intent
         self.interpretation_history.append(
             {
                 "intent": intent,
                 "recorded_at": datetime.now(UTC).isoformat(),
                 "metadata": metadata or {},
+                "revision": self.interpretation_revision,
             }
         )
         self.clarification_needed = False
@@ -44,5 +48,13 @@ class Commitment(BaseModel):
 
     def request_clarification(self, prompt: str) -> None:
         """Mark that essential details are missing and require user clarification."""
+        self.interpretation_revision += 1
         self.clarification_needed = True
         self.clarification_prompt = prompt
+        self.interpretation_history.append(
+            {
+                "clarification_requested": prompt,
+                "recorded_at": datetime.now(UTC).isoformat(),
+                "revision": self.interpretation_revision,
+            }
+        )

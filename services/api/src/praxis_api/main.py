@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from praxis_core.models.extractor import NebiusTaskExtractor
 from praxis_core.use_cases import (
     CaptureCommitmentUseCase,
+    ClarifyCommitmentUseCase,
     CompleteTaskUseCase,
     ExecuteNextActionUseCase,
     GetDailyAgendaUseCase,
@@ -43,6 +44,9 @@ def create_app(database_url: str | None = None) -> FastAPI:
             ),
             make_reconcile_execution=lambda: ReconcileExecutionUseCase(
                 uow=make_uow(), runner=runner
+            ),
+            make_clarify_commitment=lambda: ClarifyCommitmentUseCase(
+                uow=make_uow(), extractor=extractor
             ),
         )
 

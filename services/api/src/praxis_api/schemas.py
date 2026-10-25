@@ -40,6 +40,13 @@ class CaptureTaskRequest(ApiModel):
     reference_time: datetime | None = None
 
 
+class ClarifyCommitmentRequest(ApiModel):
+    owner_id: Annotated[str, Field(min_length=1, max_length=256)]
+    clarification_response: Annotated[str, Field(min_length=1, max_length=10_000)]
+    user_timezone: Annotated[str, Field(min_length=1, max_length=128)] = "UTC"
+    reference_time: datetime | None = None
+
+
 class CompleteTaskRequest(ApiModel):
     owner_id: Annotated[str, Field(min_length=1, max_length=256)]
     confirmation_note: Annotated[str, Field(min_length=1, max_length=4_000)]

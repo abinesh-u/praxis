@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from praxis_core.ports.unit_of_work import UnitOfWork
 from praxis_core.use_cases import (
     CaptureCommitmentUseCase,
+    ClarifyCommitmentUseCase,
     CompleteTaskUseCase,
     ExecuteNextActionUseCase,
     GetDailyAgendaUseCase,
@@ -36,3 +37,4 @@ class ApiServices:
     make_uow: Callable[[], UnitOfWork]
     make_execute_next_action: Callable[[], ExecuteNextActionUseCase]
     make_reconcile_execution: Callable[[], ReconcileExecutionUseCase]
+    make_clarify_commitment: Callable[[], ClarifyCommitmentUseCase] | None = None
