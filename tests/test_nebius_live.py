@@ -9,11 +9,11 @@ from praxis_core.models.providers.nebius import NebiusTokenFactoryAdapter
 
 
 @pytest.mark.skipif(
-    not os.environ.get("MODEL_API_KEY"),
-    reason="MODEL_API_KEY environment variable not set; skipping live smoke test",
+    not (os.environ.get("NEBIUS_API_KEY") or os.environ.get("MODEL_API_KEY")),
+    reason="NEBIUS_API_KEY or MODEL_API_KEY environment variable not set; skipping live smoke test",
 )
 def test_live_nebius_inference_smoke():
-    api_key = os.environ["MODEL_API_KEY"]
+    api_key = os.environ.get("NEBIUS_API_KEY") or os.environ.get("MODEL_API_KEY")
     base_url = os.environ.get("NEBIUS_BASE_URL", "https://api.tokenfactory.nebius.com/v1")
 
     config = ModelConfig(

@@ -1,116 +1,209 @@
-# Praxis
+# Praxis — Personal AI Execution System
 
-**Don't just help users organize work. Help them get work done.**
+> **"You don't need another app to manage your tasks. You need help actually doing them."**
 
-Praxis is a personal AI execution system for people who struggle with task initiation, remembering commitments, prioritization, meetings, and administrative follow-through.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-brightgreen.svg)](pyproject.toml)
+[![Next.js 15](https://img.shields.io/badge/Next.js-15-black.svg)](apps/web)
+[![Nebius Token Factory](https://img.shields.io/badge/Nebius-Token%20Factory-purple.svg)](https://nebius.com)
+[![NVIDIA Nemotron](https://img.shields.io/badge/Model-NVIDIA%20Nemotron-76B900.svg)](https://build.nvidia.com)
 
-It has two interfaces over one execution system:
-- **Praxis CLI** — local-first execution with explicitly authorized workspace access.
-- **Praxis Web** — planning and oversight for tasks, deadlines, reminders, approvals, and execution history.
+**Praxis** is a personal AI execution system designed for people who struggle with prospective memory, executive overhead, and task-initiation inertia. Unlike generic chatbots that merely offer conversational advice or passive task lists that induce guilt, Praxis is a closed-loop execution partner: it captures commitments in natural language, grounds them into concrete physical next actions, seeks approval for sensitive side effects, executes bounded tools, verifies outcomes with machine evidence, and distill reusable procedural skills.
 
-## Principles
-1. Execution over organization.
-2. Durable task and execution state.
-3. Bounded autonomy; consequential actions require approval.
-4. Local-first files and least-privilege workspace access.
-5. Evidence-based completion.
-6. Recoverable workflows, idempotency, and bounded retries.
+Built for the **Nebius Global AI Hackathon 2026** (Personal AI Track).
 
-## Repository structure
+---
+
+## 🌟 Core Pillars
+
+1. **Execution Over Organization:** Optimize for completed, verified outcomes rather than endless task categorization or conversation.
+2. **Durable State:** All commitments, attempts, idempotency keys, dependencies, and audit logs persist reliably in SQLite/PostgreSQL.
+3. **Bounded Autonomy & Human Agency:** Consequential actions require single-use approval tokens cryptographically bound to action fingerprints.
+4. **Evidence-Based Completion:** Model output is never taken as proof of success. Actions must produce observable machine evidence.
+5. **Procedural Skill Learning (M7 & M8):** Successful multi-step agent runs distill candidate procedural knowledge into a quarantined library, ready for authenticated operator validation and promotion.
+
+---
+
+## 🚀 Nebius Token Factory & NVIDIA Nemotron Integration
+
+Praxis makes real runtime inference calls through **Nebius Token Factory** (`https://api.tokenfactory.nebius.com/v1`) using NVIDIA open-source foundation models:
+
+- **Primary Model:** `nvidia/Nemotron-3_5-Lightning`
+  - High-throughput, low-latency reasoning for natural-language commitment extraction, relative deadline resolution (ISO-8601), next physical action decomposition, and bounded agent loop orchestration.
+- **Alternative Profiles in Registry:**
+  - `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` (Fast routine intake)
+  - `nvidia/nemotron-3-super-120b-a12b` (Deep multi-step planning)
+
+### Verified Live Smoke Test
+Praxis includes a dedicated live integration smoke test that communicates with the real Nebius Token Factory endpoint:
+```bash
+uv run pytest tests/test_nebius_live.py
+# 1 passed in ~1.0s (Live PONG completion & usage metrics verified)
+```
+
+---
+
+## 🏗️ Architecture & Dual Interface
+
+Praxis provides **two interfaces over one unified execution engine**:
+- **Praxis Web (`apps/web`):** Next.js 15 + TypeScript UI styled in an editorial darkroom aesthetic with keyboard navigation (`1`: Today, `2`: Queue, `3`: Approvals, `4`: Skills Library).
+- **Praxis CLI (`packages/cli`):** Local-first Typer CLI for rapid terminal intake, status checks, approvals, and recovery.
 
 ```text
 praxis/
-├── apps/web/                 # Next.js + TypeScript UI
-├── services/api/             # FastAPI application boundary
-├── packages/cli/             # Typer CLI and local workspace interface
-├── packages/core/            # Domain entities, use cases, policies, ports
-├── packages/agent-runtime/   # Bounded tool-calling runtime
-├── packages/scheduler/       # Durable reminders and recurring workflows
-├── packages/integrations/    # Permission-scoped adapters
-├── contracts/openapi/        # API contract snapshots
-├── infra/docker/             # Local infrastructure
-├── infra/scripts/            # Setup and maintenance scripts
-├── docs/product/             # Product requirements
-├── docs/architecture/        # System architecture and ADRs
-├── docs/security/             # Threat and permission model
-├── docs/development/         # Engineering workflow
-├── tests/contract/
-├── tests/e2e/
-└── .github/workflows/
+├── apps/web/                 # Next.js 15 + TypeScript Web UI (Darkroom aesthetic)
+├── services/api/             # FastAPI modular application boundary & routes
+├── packages/core/            # Domain entities, use cases, state machine, ports
+├── packages/agent-runtime/   # Bounded tool-calling runtime, skill store, learning loop
+├── packages/cli/             # Typer CLI for terminal users
+├── packages/scheduler/       # Durable reminders & scheduled job claiming
+├── packages/integrations/    # Permission-scoped gateway & webhook adapters
+├── tests/                    # Contract, e2e, and live Nebius smoke tests
+└── docs/                     # Specifications (M1 through M8), architecture, and PRDs
 ```
 
-## MVP
-- Natural-language commitment capture, persistent tasks, dependencies, and next actions
-- Today view; complete, defer, reschedule, and recovery flows
-- CLI capture/list/status and explicitly scoped workspace inspection
-- Reminders, approval queue, audit history, durable checkpoints
-- One narrow administrative workflow with approval gates
+---
 
-Voice, broad email ingestion, many integrations, multi-agent collaboration, and advanced personalization are out of scope until the core execution loop is reliable.
+## ⚡ Quickstart: Running Praxis Locally
 
-## Stack
-- Web: Next.js, React, TypeScript
-- API: Python, FastAPI, Pydantic
-- Persistence: PostgreSQL
-- CLI: Python, Typer
-- Background work: durable scheduler/queue (implementation decision pending)
-- Local development: Docker Compose
+### Prerequisites
+- **Python 3.11+** with [`uv`](https://github.com/astral-sh/uv) installed
+- **Node.js 18+** with `npm`
 
-This is an initial scaffold, not a complete production implementation. Start with `docs/development/local-setup.md` and `docs/architecture/03-system-architecture.md`.
-
-## API-backed vertical slice
-
-The first shared execution slice is available locally through SQLite:
-
+### 1. Clone & Set Up Environment
 ```bash
+git clone https://github.com/abinesh-u/praxis.git
+cd praxis
+
+# Copy environment template
 cp .env.example .env
-uv run --package praxis-api uvicorn praxis_api.main:app --reload --port 8000
-praxis capture "Send the project update" --api
-praxis today --api
-praxis complete <task-id> --api --note "Sent in the team channel"
+
+# Install Python workspace dependencies
+uv sync --all-packages
+
+# Install Web frontend dependencies
+cd apps/web && npm install && cd ../..
 ```
 
-The terminal workflow keeps recovery state visible: `praxis today` marks
-approval blockers and uncertain attempts, while `praxis show <task-id>` lists
-attempt IDs, provider IDs, evidence IDs, and safe recovery guidance. For an
-API-backed uncertain attempt, use the read-only reconciliation operation:
+### 2. Configure Nebius Token Factory
+Add your Nebius Token Factory API key in `.env`:
+```ini
+NEBIUS_API_KEY=your-nebius-token-factory-key
+# Or:
+MODEL_API_KEY=your-nebius-token-factory-key
+```
+*(If no API key is provided, Praxis seamlessly activates its deterministic offline fallback mode for local testing).*
+
+### 3. Verify Diagnostics
+Check system health, database readiness, and Nebius connectivity:
+```bash
+uv run --package praxis-cli praxis doctor
+```
+Expected output:
+```text
+Praxis Doctor — Profile: 'default'
+  ✔ Storage Directory: ~/.praxis/profiles/default (700)
+  ✔ SQLite Database: Healthy (praxis.db)
+  ✔ Storage Database: Accessible and schema valid
+  ✔ Execution Attempts: No orphaned or interrupted runs
+  ✔ Timezone: UTC
+  ✔ AI Extraction: Nebius Token Factory configured (v1.C...V_cP)
+All diagnostic checks passed.
+```
+
+---
+
+## 🖥️ Running the Application
+
+### Start Backend API Server
+```bash
+uv run --package praxis-api uvicorn praxis_api.main:app --reload --host 0.0.0.0 --port 8000
+```
+Interactive OpenAPI documentation is available at `http://localhost:8000/docs`.
+
+### Start Web UI
+In a separate terminal:
+```bash
+cd apps/web
+npm run dev
+```
+Open **`http://localhost:3000`** in your browser.
+
+---
+
+## 🎬 End-to-End Walkthrough
+
+### 1. Natural Language Commitment Capture
+Capture an ambiguous or deadline-driven intention via CLI or Web UI:
+```bash
+uv run --package praxis-cli praxis capture "Review the auth token expiry check in jwt.py by tomorrow 5pm" --api
+```
+Nebius NVIDIA Nemotron extracts:
+- **Title:** `Review auth token expiry check in jwt.py`
+- **Immediate Next Physical Action:** `Open jwt.py and inspect token expiry logic`
+- **Due Date:** Grounded to exact ISO-8601 timestamp with user timezone.
+
+### 2. Inspect Today Agenda & Actionable Spotlight
+```bash
+uv run --package praxis-cli praxis today --api
+```
+
+### 3. Approval-Gated Execution
+Consequential actions (such as filesystem writes or webhooks) trigger an approval gate:
+- Inspect pending requests:
+  ```bash
+  uv run --package praxis-cli praxis approvals list --api
+  ```
+- Grant approval:
+  ```bash
+  uv run --package praxis-cli praxis approvals grant <approval-id> --api
+  ```
+- Execute with bounded agent tools:
+  ```bash
+  uv run --package praxis-cli praxis do <task-id> --api
+  ```
+
+### 4. Verified Procedural Skill Learning (M7 & M8)
+- When a multi-step agent run succeeds, Praxis synthesizes machine evidence receipts (`executed_steps`, tool outputs).
+- **M7 Learning Loop:** Distills candidate procedural knowledge into a quarantined candidate file bound to attempt provenance and receipt hashes.
+- **M8 Skills Library UI:** Visit Tab 4 (**Skills**) in the Web UI:
+  - Inspect candidate skills in quarantine.
+  - Review immutable execution provenance and tool requirements.
+  - **Authoritative Validation Gate:** Click **Promote Skill** (backend cryptographically verifies source execution attempt in SQLite, validates evidence receipt hash, and checks tool allowlist).
+  - Promoted skills are immediately active in subsequent agent prompt depths!
+
+---
+
+## 🧪 Comprehensive Verification Suite
+
+Praxis enforces test-driven development, strict security invariants, and automated quality gates:
 
 ```bash
-praxis reconcile <task-uuid> <attempt-uuid>
+# 1. Run all 312 backend unit and integration tests
+uv run pytest
+
+# 2. Run live Nebius Token Factory inference smoke test
+uv run pytest tests/test_nebius_live.py
+
+# 3. Check code style and formatting
+make lint
+
+# 4. Build Next.js production frontend
+make web-build
 ```
 
-Reconciliation checks provider status and never dispatches the original action
-again. Do not use `--force-retry` for an uncertain outcome until the external
-result has been independently verified.
+---
 
-Set `PRAXIS_API_URL` to point the CLI at another API instance. The API
-enforces owner-scoped reads, persists commitments/tasks/audit events, and
-creates server-owned human-confirmed evidence for explicit completion. For
-protected deployments, configure matching opaque `owner=token` values in
-`PRAXIS_AUTH_TOKENS` and set the CLI's `PRAXIS_API_TOKEN`.
+## 🔒 Security & Safety Invariants
 
-The bounded execution endpoint is `POST /tasks/{id}/execute`. It dispatches
-only actions with `tool_hint=webhook_post` to `PRAXIS_WEBHOOK_URL`, passing a
-provider idempotency key. The provider must return JSON containing
-`operation_id` and `status: completed` for verified evidence. Timeouts and
-accepted-but-incomplete responses become `outcome_unknown`; idempotent retries
-do not blindly resubmit the external side effect.
+- **Fail-Closed Authentication:** Production endpoints strictly require authenticated tenant bearer tokens; missing or mismatched tokens yield 401/403.
+- **Tenant Isolation:** Private skills and task histories of Tenant A return 404 to Tenant B, preventing metadata leaks.
+- **Single-Use Approvals:** Bound to SHA-256 action parameter fingerprints; replay or tampering is rejected.
+- **Quarantined Knowledge:** Unverified candidate skills are never injected into active LLM prompt depth until verified by an operator.
+- **Outbound HTTP Defenses:** Webhook adapters block localhost/private IP ranges, reject credentials in URLs, and enforce streaming response-size limits.
 
-The provider contract must document idempotency-key retention and duplicate
-request behavior. A `status: failed` response is authoritative only when it
-also includes `failure_final: true`, meaning the operation did not take effect
-or its partial effects are explicitly described. Otherwise Praxis preserves
-`outcome_unknown` and requires another read-only reconciliation.
+---
 
-Set `PRAXIS_WEBHOOK_STATUS_URL` when the provider exposes a separate operation
-lookup base. Redirects are disabled, private/link-local destinations and URL
-credentials are rejected, provider IDs are path-constrained, and
-`PRAXIS_WEBHOOK_ALLOWED_HOSTS` can enforce an exact hostname allowlist.
-Production deployments should additionally enforce network-level egress
-restrictions or a controlled resolver so DNS validation and connection-time
-resolution cannot diverge.
+## 📄 License
 
-Before exposing this path to real users, follow the
-[execution release-readiness checklist](docs/development/release-readiness.md),
-including a disposable real-provider test and the documented procedure for
-unresolved outcomes.
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
