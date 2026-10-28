@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 /**
  * Outcome reconciliation recovery module.
  * Exposes an interface for recovering from uncertain attempt states without
- * duplicating side-effects across the network seam.
+ * duplicating side-effects across the network seam, preserving operational depth.
  */
 interface RecoveryBannerProps {
   taskId: string;
@@ -31,6 +31,7 @@ export function RecoveryBanner({
   }
 
   async function handleReconcile() {
+    if (isReconciling) return;
     setIsReconciling(true);
     setErrorMsg(null);
     try {
@@ -49,7 +50,7 @@ export function RecoveryBanner({
 
   return (
     <div className="rounded-xl border border-ember/60 bg-[#241005] p-4 text-xs space-y-2.5">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
         <div className="flex items-start gap-2.5">
           <AlertCircle className="h-4 w-4 text-ember shrink-0 mt-0.5" />
           <div className="space-y-1">

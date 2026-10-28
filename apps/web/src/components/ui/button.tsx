@@ -5,10 +5,10 @@ import { cn } from "@/lib/utils";
 
 /**
  * Interactive button primitive module.
- * Provides a flexible styling interface with strong visual locality.
+ * Provides a flexible styling interface with strong visual locality and depth.
  */
 const buttonVariants = cva(
-  "inline-flex items-center justify-center whitespace-nowrap text-xs font-medium uppercase tracking-wider transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
+  "inline-flex items-center justify-center whitespace-nowrap text-xs font-medium uppercase tracking-wider transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#ffedd7]/80 focus-visible:ring-offset-1 focus-visible:ring-offset-[#100904] disabled:pointer-events-none disabled:opacity-50",
   {
     variants: {
       variant: {
@@ -17,7 +17,7 @@ const buttonVariants = cva(
         outline:
           "border border-cream/40 bg-transparent text-cream hover:border-cream hover:bg-white/5 rounded-outline px-4 py-2",
         ghost:
-          "bg-transparent text-cream hover:bg-surface-bark/40 hover:text-cream rounded-md px-3 py-2",
+          "bg-transparent text-cream hover:bg-surface-bark/40 hover:text-cream rounded-outline px-3 py-2",
         destructive:
           "border border-red-900/60 bg-[#2d0b08] text-cream hover:bg-[#3d0f0a] rounded-outline px-4 py-2",
         secondary:

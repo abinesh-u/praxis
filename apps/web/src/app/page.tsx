@@ -19,6 +19,8 @@ import {
 } from "@/components/ui/dialog";
 import { clientAdapter } from "@/lib/api";
 
+type TabValue = "today" | "approvals" | "directory";
+
 /**
  * Operational dashboard page module.
  * Composes the primary execution workflows into a calm, focused workspace interface.
@@ -28,6 +30,10 @@ export default function HomePage() {
   const [ownerId, setOwnerId] = React.useState("default_user");
   const [refreshTrigger, setRefreshTrigger] = React.useState(0);
   const [isEditingOwner, setIsEditingOwner] = React.useState(false);
+  const [activeTab, setActiveTab] = React.useState<TabValue>("today");
+
+  // Focus ref for fast capture navigation
+  const captureInputRef = React.useRef<HTMLInputElement | null>(null);
 
   // Authentication configuration modal
   const [isAuthOpen, setIsAuthOpen] = React.useState(false);
@@ -40,6 +46,46 @@ export default function HomePage() {
       setHasActiveToken(true);
       setTokenInput(existing);
     }
+  }, []);
+
+  // Global keyboard navigation with strict input editing guards
+  React.useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      const isEditing =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        Boolean(target?.isContentEditable);
+
+      // Cmd+K or Ctrl+K focuses capture input unconditionally
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        captureInputRef.current?.focus();
+        return;
+      }
+
+      // / focuses capture input only when not actively editing
+      if (e.key === "/" && !isEditing) {
+        e.preventDefault();
+        captureInputRef.current?.focus();
+        return;
+      }
+
+      // Tab switcher shortcuts 1, 2, 3 only outside editable elements
+      if (!isEditing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.key === "1") {
+          setActiveTab("today");
+        } else if (e.key === "2") {
+          setActiveTab("approvals");
+        } else if (e.key === "3") {
+          setActiveTab("directory");
+        }
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
   const triggerRefresh = React.useCallback(() => {
@@ -73,7 +119,7 @@ export default function HomePage() {
                 Praxis
               </span>
               <span className="text-[10px] uppercase tracking-wider text-ember bg-surface-bark/60 border border-surface-cork px-2 py-0.5 rounded-full font-mono">
-                M5 Release Ready
+                M6 Agent Runtime Active
               </span>
             </div>
             <p className="text-xs text-cream-muted">
@@ -134,12 +180,20 @@ export default function HomePage() {
       <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
         {/* Natural Language Capture Seam */}
         <section className="space-y-2">
-          <CaptureBox ownerId={ownerId} onCaptured={triggerRefresh} />
+          <CaptureBox
+            ownerId={ownerId}
+            onCaptured={triggerRefresh}
+            inputRef={captureInputRef}
+          />
         </section>
 
         {/* Tabbed Execution Center */}
         <section>
-          <Tabs defaultValue="today" className="w-full">
+          <Tabs
+            value={activeTab}
+            onValueChange={(val) => setActiveTab(val as TabValue)}
+            className="w-full"
+          >
             <TabsList>
               <TabsTrigger value="today" className="flex items-center gap-1.5">
                 <Sparkles className="h-3.5 w-3.5" />
@@ -160,6 +214,7 @@ export default function HomePage() {
                 ownerId={ownerId}
                 refreshTrigger={refreshTrigger}
                 onRefreshNeeded={triggerRefresh}
+                onNavigateToApprovals={() => setActiveTab("approvals")}
               />
             </TabsContent>
 
@@ -244,9 +299,26 @@ export default function HomePage() {
         </DialogContent>
       </Dialog>
 
-      {/* Editorial Micro Footer */}
-      <footer className="border-t border-surface-cork/40 border-dashed py-8 mt-16 text-center text-[10px] text-cream-muted uppercase tracking-widest">
-        <span>Praxis Execution System · Bounded Autonomy & Evidence Verification</span>
+      {/* Editorial Micro Footer with Shortcuts HUD */}
+      <footer className="border-t border-surface-cork/40 border-dashed py-8 mt-16 text-center text-[10px] text-cream-muted uppercase tracking-widest space-y-3">
+        <div className="flex flex-wrap items-center justify-center gap-3 text-cream-muted/80 font-mono text-[10px] normal-case">
+          <span className="flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 rounded bg-surface-card border border-surface-cork text-cream font-mono">/</kbd> Focus Capture
+          </span>
+          <span className="text-surface-cork">·</span>
+          <span className="flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 rounded bg-surface-card border border-surface-cork text-cream font-mono">1</kbd> Today
+          </span>
+          <span className="text-surface-cork">·</span>
+          <span className="flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 rounded bg-surface-card border border-surface-cork text-cream font-mono">2</kbd> Approvals
+          </span>
+          <span className="text-surface-cork">·</span>
+          <span className="flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 rounded bg-surface-card border border-surface-cork text-cream font-mono">3</kbd> Commitments
+          </span>
+        </div>
+        <p>Praxis Execution System · Bounded Autonomy & Evidence Verification</p>
       </footer>
     </main>
   );

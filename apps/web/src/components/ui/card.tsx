@@ -3,7 +3,8 @@ import { cn } from "@/lib/utils";
 
 /**
  * Card surface primitives module.
- * Establishes depth through subtle layered tone values rather than drop shadows.
+ * Establishes depth through subtle layered tone values rather than drop shadows,
+ * maintaining high visual locality and flat editorial restraint.
  */
 const Card = React.forwardRef<
   HTMLDivElement,
@@ -12,7 +13,7 @@ const Card = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      "rounded-xl border border-surface-cork bg-[#150d07] text-cream",
+      "rounded-xl border border-surface-cork bg-[#150d07] text-cream shadow-none",
       className
     )}
     {...props}
@@ -26,7 +27,7 @@ const CardHeader = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("flex flex-col space-y-1.5 p-5 border-b border-surface-cork/40", className)}
+    className={cn("flex flex-col space-y-1.5 p-6 border-b border-surface-cork/40 border-dashed", className)}
     {...props}
   />
 ));

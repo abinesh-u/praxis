@@ -11,12 +11,14 @@ import {
   Loader2,
   Calendar,
   Sparkles,
+  ShieldAlert,
 } from "lucide-react";
 import {
   clientAdapter,
   type TodayResponse,
   type AgendaItemResponse,
   type TaskResponse,
+  type ExecutionResponse,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -27,15 +29,28 @@ import { TaskDetailDialog } from "@/components/task-detail-dialog";
 /**
  * Today focus view module.
  * Structures the daily execution agenda to reduce cognitive friction and make
- * the immediate next step obvious. Maintains high locality over task interactions.
+ * the immediate next step obvious. Maintains high locality over task interactions
+ * while leveraging the client adapter seam to enforce safe execution depth.
  */
 interface TodayViewProps {
   ownerId: string;
   refreshTrigger: number;
   onRefreshNeeded: () => void;
+  onNavigateToApprovals?: () => void;
 }
 
-export function TodayView({ ownerId, refreshTrigger, onRefreshNeeded }: TodayViewProps) {
+interface VerifiedReceiptState {
+  taskId: string;
+  providerRequestId: string | null;
+  message: string;
+}
+
+export function TodayView({
+  ownerId,
+  refreshTrigger,
+  onRefreshNeeded,
+  onNavigateToApprovals,
+}: TodayViewProps) {
   const [agenda, setAgenda] = React.useState<TodayResponse | null>(null);
   const [isLoading, setIsLoading] = React.useState(true);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
@@ -43,8 +58,10 @@ export function TodayView({ ownerId, refreshTrigger, onRefreshNeeded }: TodayVie
   // Inspector dialog state
   const [selectedTask, setSelectedTask] = React.useState<TaskResponse | null>(null);
 
-  // Execution state per task ID
+  // Authoritative execution lifecycle state
   const [executingTaskId, setExecutingTaskId] = React.useState<string | null>(null);
+  const [verifiedReceipt, setVerifiedReceipt] = React.useState<VerifiedReceiptState | null>(null);
+  const [approvalRequiredNotice, setApprovalRequiredNotice] = React.useState<string | null>(null);
 
   const fetchAgenda = React.useCallback(async () => {
     setIsLoading(true);
@@ -68,13 +85,31 @@ export function TodayView({ ownerId, refreshTrigger, onRefreshNeeded }: TodayVie
     if (executingTaskId) return;
 
     setExecutingTaskId(item.task.id);
+    setVerifiedReceipt(null);
+    setApprovalRequiredNotice(null);
+    setErrorMsg(null);
+
     try {
       const idempotencyKey = `exec-${item.task.id}-${Date.now()}`;
-      await clientAdapter.executeTask({
+      const response: ExecutionResponse = await clientAdapter.executeTask({
         taskId: item.task.id,
         ownerId,
         idempotencyKey,
       });
+
+      // Handle authoritative backend outcome
+      if (response.outcome_status === "completed" || response.task.status === "completed") {
+        setVerifiedReceipt({
+          taskId: item.task.id,
+          providerRequestId: response.provider_request_id || null,
+          message: "Execution verified by backend.",
+        });
+      } else if (response.outcome_status === "awaiting_approval" || response.task.status === "awaiting_approval") {
+        setApprovalRequiredNotice(
+          `Action requires explicit authorization. An approval request has been generated.`
+        );
+      }
+
       fetchAgenda();
       onRefreshNeeded();
     } catch (err: unknown) {
@@ -113,16 +148,21 @@ export function TodayView({ ownerId, refreshTrigger, onRefreshNeeded }: TodayVie
     <div className="space-y-6">
       {/* Primary Immediate Next Step Banner */}
       {primaryItem ? (
-        <Card className="border-surface-cork/90 bg-[#191008] shadow-lg relative overflow-hidden">
-          <div className="absolute top-0 left-0 h-1 w-full bg-gradient-to-r from-ember via-[#ffedd7] to-surface-bark" />
-          <CardHeader className="pb-2 pt-5">
+        <Card className="border-surface-cork/90 bg-[#191008] relative overflow-hidden">
+          <div className="absolute top-0 left-0 h-0.5 w-full bg-gradient-to-r from-ember via-[#ffedd7] to-surface-bark" />
+          <CardHeader className="pb-3 pt-5">
             <div className="flex items-center justify-between">
               <span className="text-[10px] uppercase font-bold tracking-widest text-ember flex items-center gap-1.5">
-                <Sparkles className="h-3 w-3" /> Next Immediate Focus
+                <Sparkles className="h-3 w-3" /> Immediate Next Action
               </span>
-              <Badge variant={primaryItem.task.current_next_action?.risk_level === "high" ? "high" : "default"}>
-                {primaryItem.task.current_next_action?.risk_level || "low"} risk
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Badge variant={primaryItem.task.current_next_action?.risk_level === "high" ? "high" : "default"}>
+                  {primaryItem.task.current_next_action?.risk_level || "low"} risk
+                </Badge>
+                <Badge variant="secondary" className="font-mono text-[9px]">
+                  {primaryItem.task.priority}
+                </Badge>
+              </div>
             </div>
             <CardTitle className="text-base text-cream normal-case tracking-normal mt-1">
               {primaryItem.task.title}
@@ -134,10 +174,10 @@ export function TodayView({ ownerId, refreshTrigger, onRefreshNeeded }: TodayVie
             )}
           </CardHeader>
 
-          <CardContent className="space-y-4 pt-2">
-            {/* Concrete Action Card */}
+          <CardContent className="space-y-4 pt-3">
+            {/* Concrete Target Action Card */}
             {primaryItem.task.current_next_action && (
-              <div className="p-3.5 rounded-lg bg-[#120a04] border border-surface-cork/70 flex items-center justify-between gap-3">
+              <div className="p-3.5 rounded-lg bg-[#120a04] border border-surface-cork/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="space-y-1">
                   <span className="text-[10px] uppercase tracking-wider text-cream-muted block">
                     Target Action:
@@ -153,16 +193,72 @@ export function TodayView({ ownerId, refreshTrigger, onRefreshNeeded }: TodayVie
                   className="shrink-0 bg-surface-bark hover:bg-[#4a301e] border border-surface-cork text-cream"
                 >
                   {executingTaskId === primaryItem.task.id ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
+                      Dispatching...
+                    </>
                   ) : (
-                    <Play className="h-3.5 w-3.5 mr-1" />
+                    <>
+                      <Play className="h-3.5 w-3.5 mr-1.5" />
+                      Execute Now
+                    </>
                   )}
-                  Execute Now
                 </Button>
               </div>
             )}
 
-            {/* Check for outcome_unknown attempt */}
+            {/* Pending execution state feedback */}
+            {executingTaskId === primaryItem.task.id && (
+              <div className="p-3 rounded-lg border border-surface-cork/60 bg-[#140c06] flex items-center gap-2 text-xs text-cream-muted font-mono">
+                <Loader2 className="h-4 w-4 animate-spin text-amber-400 shrink-0" />
+                <span>Authorizing and dispatching action to backend...</span>
+              </div>
+            )}
+
+            {/* Verified Evidence Receipt Note */}
+            {verifiedReceipt && verifiedReceipt.taskId === primaryItem.task.id && (
+              <div className="p-3 rounded-lg border border-emerald-800/60 bg-emerald-950/20 text-xs text-emerald-300 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+                  <span>{verifiedReceipt.message}</span>
+                  {verifiedReceipt.providerRequestId && (
+                    <span className="font-mono text-[10px] text-emerald-400/80 bg-emerald-950/40 px-1.5 py-0.5 rounded border border-emerald-800/40">
+                      ID: {verifiedReceipt.providerRequestId.slice(0, 12)}
+                    </span>
+                  )}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setVerifiedReceipt(null)}
+                  className="h-6 px-1.5 text-[10px] text-emerald-400 hover:text-emerald-200"
+                >
+                  Dismiss
+                </Button>
+              </div>
+            )}
+
+            {/* Approval Required Notice */}
+            {approvalRequiredNotice && (
+              <div className="p-3 rounded-lg border border-amber-700/60 bg-amber-950/20 text-xs text-amber-200 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <ShieldAlert className="h-4 w-4 text-amber-400 shrink-0" />
+                  <span>{approvalRequiredNotice}</span>
+                </div>
+                {onNavigateToApprovals && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={onNavigateToApprovals}
+                    className="h-7 px-2.5 text-[10px] shrink-0 border-amber-700/80 text-amber-200 hover:bg-amber-900/40"
+                  >
+                    View Approvals
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {/* Outcome Unknown Recovery Banner */}
             {primaryItem.attempt && (
               <RecoveryBanner
                 taskId={primaryItem.task.id}
@@ -172,7 +268,7 @@ export function TodayView({ ownerId, refreshTrigger, onRefreshNeeded }: TodayVie
               />
             )}
 
-            <div className="flex items-center justify-between pt-1 border-t border-surface-cork/30">
+            <div className="flex items-center justify-between pt-2 border-t border-surface-cork/30 border-dashed">
               <span className="text-[10px] font-mono text-cream-muted">
                 Task ID: {primaryItem.task.id.slice(0, 8)}
               </span>
@@ -194,7 +290,7 @@ export function TodayView({ ownerId, refreshTrigger, onRefreshNeeded }: TodayVie
             All Clear For Today
           </p>
           <p className="mt-1 text-cream-muted/70">
-            No actionable next actions are currently waiting. Capture a new task above anytime.
+            No actionable next steps are waiting right now. Capture a new task above anytime.
           </p>
         </div>
       )}
@@ -268,7 +364,7 @@ export function TodayView({ ownerId, refreshTrigger, onRefreshNeeded }: TodayVie
               <div
                 key={item.task.id}
                 onClick={() => setSelectedTask(item.task)}
-                className="flex items-center justify-between p-3.5 rounded-xl border border-surface-cork/40 bg-[#120a05] opacity-75 hover:opacity-100 transition-opacity cursor-pointer"
+                className="flex items-center justify-between p-3.5 rounded-xl border border-surface-cork/40 bg-[#120a05] opacity-80 hover:opacity-100 transition-opacity cursor-pointer"
               >
                 <div className="space-y-1">
                   <span className="text-xs text-cream/90 font-medium block">

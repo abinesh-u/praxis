@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input";
 /**
  * Task detail inspector module.
  * Exposes a structured inspection interface for tasks, providing operational depth
- * without leaving the local view context.
+ * without leaving the local view context, leveraging the underlying adapter seam.
  */
 interface TaskDetailDialogProps {
   task: TaskResponse | null;
@@ -26,6 +26,24 @@ interface TaskDetailDialogProps {
   isOpen: boolean;
   onClose: () => void;
   onRefresh: () => void;
+}
+
+function sanitizeHintArgs(args: Record<string, unknown> | null | undefined): Record<string, unknown> {
+  if (!args) return {};
+  const SENSITIVE_KEYS = ["token", "secret", "password", "key", "authorization", "bearer", "api_key", "credential"];
+  const sanitized: Record<string, unknown> = {};
+
+  for (const [k, v] of Object.entries(args)) {
+    const lowerKey = k.toLowerCase();
+    if (SENSITIVE_KEYS.some((sk) => lowerKey.includes(sk))) {
+      sanitized[k] = "•••••••• [REDACTED]";
+    } else if (typeof v === "object" && v !== null && !Array.isArray(v)) {
+      sanitized[k] = sanitizeHintArgs(v as Record<string, unknown>);
+    } else {
+      sanitized[k] = v;
+    }
+  }
+  return sanitized;
 }
 
 export function TaskDetailDialog({
@@ -166,7 +184,7 @@ export function TaskDetailDialog({
                     Tool Arguments:
                   </span>
                   <pre className="p-2 rounded bg-[#100904] border border-surface-cork/40 text-[10px] font-mono text-cream/90 overflow-x-auto">
-                    {JSON.stringify(nextAction.tool_args_hint, null, 2)}
+                    {JSON.stringify(sanitizeHintArgs(nextAction.tool_args_hint), null, 2)}
                   </pre>
                 </div>
               )}

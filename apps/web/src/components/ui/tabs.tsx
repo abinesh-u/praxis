@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * Navigation tabs module.
- * Provides accessible view switching with clean visual restraint.
+ * Provides accessible view switching with clean visual restraint and depth.
  */
 const Tabs = TabsPrimitive.Root;
 
@@ -15,7 +15,7 @@ const TabsList = React.forwardRef<
   <TabsPrimitive.List
     ref={ref}
     className={cn(
-      "inline-flex h-11 items-center justify-start border-b border-surface-cork/60 w-full gap-4 text-cream-muted",
+      "inline-flex h-11 items-center justify-start border-b border-surface-cork/60 border-dashed w-full gap-4 text-cream-muted",
       className
     )}
     {...props}
