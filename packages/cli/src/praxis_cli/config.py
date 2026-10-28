@@ -36,6 +36,30 @@ class CliConfig:
     praxis_dir: Path
     api_url: str
 
+    @property
+    def db_path(self) -> Path:
+        """Resolve the SQLite database path."""
+        if self.store_path.suffix == ".db":
+            return self.store_path
+        if self.store_path.suffix == ".json":
+            return self.store_path.with_name("praxis.db")
+        return self.store_path
+
+    @property
+    def db_url(self) -> str:
+        """Construct the SQLite database URL for UnitOfWork."""
+        env_url = os.getenv("PRAXIS_DB_URL")
+        if env_url:
+            return env_url
+        return f"sqlite:///{self.db_path}"
+
+    @property
+    def legacy_json_path(self) -> Path:
+        """Locate legacy store.json if present in the profile directory."""
+        if self.store_path.suffix == ".json":
+            return self.store_path
+        return self.store_path.with_name("store.json")
+
 
 def resolve_api_url(api_url_override: str | None = None) -> str:
     """Resolve the API base URL without allowing malformed endpoint configuration.
@@ -163,7 +187,7 @@ def resolve_config(
             global_profile = _find_global_profile(praxis_dir)
             profile = validate_profile_name(global_profile) if global_profile else "default"
 
-    store_path = praxis_dir / "profiles" / profile / "store.json"
+    store_path = praxis_dir / "profiles" / profile / "praxis.db"
     tz = resolve_timezone(tz_override)
 
     return CliConfig(

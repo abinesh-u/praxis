@@ -6,8 +6,12 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from praxis_core.entities.evidence import Evidence
+from praxis_core.entities.task import TaskStatus
 from praxis_core.errors import EntityNotFoundError, InvalidStateTransitionError
+from praxis_core.execution.synthesizer import EvidenceSynthesizer
 from praxis_core.ports.agent_runner import AgentRunner, AgentRunOutcome
+from praxis_core.ports.status_reconciler import RawReconcileResult, StatusReconciler
 from praxis_core.ports.unit_of_work import UnitOfWork
 from praxis_core.use_cases.execute_next_action import ExecuteNextActionResult
 
@@ -21,9 +25,17 @@ class ReconcileExecutionCommand(BaseModel):
 class ReconcileExecutionUseCase:
     """Resolve an existing attempt by observation; never calls the original action."""
 
-    def __init__(self, uow: UnitOfWork, runner: AgentRunner) -> None:
+    def __init__(
+        self,
+        uow: UnitOfWork,
+        reconciler: StatusReconciler | AgentRunner | None = None,
+        runner: StatusReconciler | AgentRunner | None = None,
+    ) -> None:
         self.uow = uow
-        self.runner = runner
+        resolved = reconciler or runner
+        if resolved is None:
+            raise ValueError("Either 'reconciler' or 'runner' must be provided")
+        self.reconciler = resolved
 
     async def execute(self, cmd: ReconcileExecutionCommand) -> ExecuteNextActionResult:
         async with self.uow:
@@ -51,14 +63,30 @@ class ReconcileExecutionUseCase:
                     "Only uncertain execution attempts can be reconciled",
                 )
 
-        outcome = await self.runner.reconcile_action(
-            attempt_id=attempt.id,
-            task=task,
-            action=action,
-            owner_id=cmd.owner_id,
-            provider_request_id=attempt.provider_request_id,
-            idempotency_key=attempt.idempotency_key,
-        )
+        legacy_outcome: AgentRunOutcome | None = None
+        if hasattr(self.reconciler, "inspect_status"):
+            raw_reconcile = await self.reconciler.inspect_status(
+                attempt_id=attempt.id,
+                idempotency_key=attempt.idempotency_key,
+                provider_operation_id=attempt.provider_request_id,
+            )
+        else:
+            # Fallback for legacy AgentRunner
+            legacy_outcome = await self.reconciler.reconcile_action(
+                attempt_id=attempt.id,
+                task=task,
+                action=action,
+                owner_id=cmd.owner_id,
+                provider_request_id=attempt.provider_request_id,
+                idempotency_key=attempt.idempotency_key,
+            )
+            raw_reconcile = RawReconcileResult(
+                status=legacy_outcome.status,
+                provider_operation_id=legacy_outcome.provider_request_id,
+                raw_payload=legacy_outcome.output,
+                error=legacy_outcome.error,
+                failure_final=(legacy_outcome.status == "failed"),
+            )
 
         async with self.uow:
             task = await self.uow.tasks.get_for_owner(attempt.task_id, cmd.owner_id)
@@ -75,36 +103,110 @@ class ReconcileExecutionUseCase:
                         output="Attempt was reconciled by another request",
                     ),
                 )
-            if (
-                outcome.status == "completed"
-                and outcome.evidence
-                and outcome.evidence.is_verified()
-            ):
-                action.mark_completed(evidence_id=outcome.evidence.id)
-                attempt.mark_completed(evidence_id=outcome.evidence.id)
-                if not [item for item in task.next_actions if not item.completed]:
-                    task.complete(evidence=outcome.evidence)
-            elif outcome.status == "outcome_unknown":
+
+            if raw_reconcile.status == "completed":
+                if (
+                    legacy_outcome is not None
+                    and legacy_outcome.evidence
+                    and legacy_outcome.evidence.is_verified()
+                ):
+                    evidence: Evidence | None = legacy_outcome.evidence
+                elif action.tool_hint == "webhook_post":
+                    evidence = EvidenceSynthesizer.verify_and_synthesize_webhook_receipt(
+                        task_id=task.id,
+                        action_id=action.id,
+                        attempt_id=attempt.id,
+                        raw_result=raw_reconcile,
+                    )
+                elif action.tool_hint in ("agent_runtime", "agent_loop") or (
+                    isinstance(raw_reconcile.raw_payload, dict)
+                    and "run_id" in raw_reconcile.raw_payload
+                ):
+                    evidence = EvidenceSynthesizer.verify_and_synthesize_agent_receipt(
+                        task_id=task.id,
+                        action_id=action.id,
+                        attempt_id=attempt.id,
+                        raw_result=raw_reconcile,
+                    )
+                else:
+                    evidence = EvidenceSynthesizer.verify_and_synthesize_webhook_receipt(
+                        task_id=task.id,
+                        action_id=action.id,
+                        attempt_id=attempt.id,
+                        raw_result=raw_reconcile,
+                    )
+
+                if evidence and evidence.is_verified():
+                    action.mark_completed(evidence_id=evidence.id)
+                    attempt.mark_completed(evidence_id=evidence.id)
+                    if task.status == TaskStatus.PLANNED:
+                        task.start()
+                    elif task.status == TaskStatus.AWAITING_APPROVAL:
+                        task.approval_granted()
+                    remaining = [item for item in task.next_actions if not item.completed]
+                    if not remaining:
+                        task.complete(evidence=evidence)
+                    norm_outcome = AgentRunOutcome(
+                        status="completed",
+                        evidence=evidence,
+                        output=raw_reconcile.raw_payload,
+                        provider_request_id=raw_reconcile.provider_operation_id,
+                    )
+                else:
+                    attempt.mark_outcome_unknown(
+                        "Reconciliation returned unverified completion; reconcile again later",
+                        raw_reconcile.provider_operation_id or attempt.provider_request_id,
+                    )
+                    task.recovery_suggestion = (
+                        "Provider outcome remains uncertain; reconcile again later"
+                    )
+                    norm_outcome = AgentRunOutcome(
+                        status="outcome_unknown",
+                        error=(
+                            "Reconciliation returned unverified completion; reconcile again later"
+                        ),
+                        provider_request_id=raw_reconcile.provider_operation_id
+                        or attempt.provider_request_id,
+                    )
+
+            elif raw_reconcile.status == "failed" and raw_reconcile.failure_final:
+                err_msg = raw_reconcile.error or "Provider reported execution failure"
+                attempt.mark_failed(err_msg)
+                if task.status == TaskStatus.PLANNED:
+                    task.start()
+                task.fail(
+                    reason=err_msg,
+                    recovery_suggestion="Review the provider result before taking further action",
+                )
+                norm_outcome = AgentRunOutcome(
+                    status="failed",
+                    error=err_msg,
+                    provider_request_id=raw_reconcile.provider_operation_id,
+                )
+
+            else:  # outcome_unknown or non-final failure
                 attempt.mark_outcome_unknown(
-                    outcome.error or "Provider still cannot confirm the outcome",
-                    outcome.provider_request_id or attempt.provider_request_id,
+                    raw_reconcile.error or "Provider still cannot confirm the outcome",
+                    raw_reconcile.provider_operation_id or attempt.provider_request_id,
                 )
                 task.recovery_suggestion = (
                     "Provider has not confirmed the outcome; reconcile again later"
                 )
-            else:
-                attempt.mark_failed(outcome.error or "Provider reported execution failure")
-                task.fail(
-                    reason=outcome.error or "Provider reported execution failure",
-                    recovery_suggestion="Review the provider result before taking further action",
+                norm_outcome = AgentRunOutcome(
+                    status="outcome_unknown",
+                    error=raw_reconcile.error or "Provider still cannot confirm the outcome",
+                    provider_request_id=raw_reconcile.provider_operation_id
+                    or attempt.provider_request_id,
                 )
+
             self.uow.track_task(task)
             await self.uow.tasks.save(task)
             await self.uow.attempts.save(attempt)
             await self.uow.commit()
+
             return ExecuteNextActionResult(
                 task=task,
                 action=action,
                 attempt=attempt,
-                outcome=outcome,
+                outcome=norm_outcome,
             )

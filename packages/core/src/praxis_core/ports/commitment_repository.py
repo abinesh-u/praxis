@@ -35,6 +35,14 @@ class CommitmentRepository(Protocol):
         """Find commitment by idempotency key and owner."""
         ...
 
+    async def find_by_id_prefix(
+        self,
+        prefix: str,
+        owner_id: str,
+    ) -> list[Commitment]:
+        """Find commitments matching an ID prefix within the owner scope."""
+        ...
+
 
 class InMemoryCommitmentRepository:
     """In-memory commitment repository for testing."""
@@ -72,3 +80,17 @@ class InMemoryCommitmentRepository:
             if c.owner_id == owner_id and c.idempotency_key == key:
                 return c.model_copy(deep=True)
         return None
+
+    async def find_by_id_prefix(
+        self,
+        prefix: str,
+        owner_id: str,
+    ) -> list[Commitment]:
+        clean = prefix.strip().lower().replace("-", "")
+        if not clean:
+            return []
+        return [
+            c.model_copy(deep=True)
+            for c in self._commitments.values()
+            if c.owner_id == owner_id and str(c.id).replace("-", "").lower().startswith(clean)
+        ]

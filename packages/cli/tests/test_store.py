@@ -50,8 +50,7 @@ async def test_store_creation_and_persistence(tmp_path: Path):
         await uow.tasks.save(task)
         await uow.commit()
 
-    assert store_file.exists()
-    assert (store_file.parent / "store.lock").exists()
+    assert (store_file.parent / "praxis.db").exists()
 
     # Reopen in new unit of work
     uow2 = JsonFileUnitOfWork(store_file)
@@ -65,6 +64,52 @@ async def test_store_creation_and_persistence(tmp_path: Path):
         events = await uow2.audit_sink.list_for_aggregate(task_id)
         assert len(events) >= 1
         assert events[0].event_type == "task.created"
+
+
+@pytest.mark.anyio
+async def test_legacy_json_migration_to_sqlite(tmp_path: Path):
+    """Legacy store.json records are seamlessly migrated to SQLite and archived."""
+    store_file = tmp_path / "legacy" / "store.json"
+    store_file.parent.mkdir(parents=True, exist_ok=True)
+    legacy_payload = {
+        "schema_version": 1,
+        "tasks": {
+            "77777777-7777-7777-7777-777777777777": {
+                "id": "77777777-7777-7777-7777-777777777777",
+                "owner_id": "legacy_owner",
+                "title": "Migrated legacy task",
+                "status": "planned",
+                "version": 1,
+                "created_at": "2026-10-25T00:00:00Z",
+                "updated_at": "2026-10-25T00:00:00Z",
+                "dependencies": [],
+                "next_actions": [],
+                "evidence_records": [],
+            }
+        },
+        "commitments": {},
+        "approvals": {},
+        "attempts": {},
+        "audit_events": [],
+    }
+    import json
+
+    store_file.write_text(json.dumps(legacy_payload), encoding="utf-8")
+    (store_file.parent / "store.lock").touch()
+
+    uow = JsonFileUnitOfWork(store_file)
+    async with uow:
+        migrated_task = await uow.tasks.get_for_owner(
+            uuid4().__class__("77777777-7777-7777-7777-777777777777"), "legacy_owner"
+        )
+        assert migrated_task is not None
+        assert migrated_task.title == "Migrated legacy task"
+
+    # Verify original file archived and lock removed
+    assert not store_file.exists()
+    assert (store_file.parent / "store.json.migrated").exists()
+    assert not (store_file.parent / "store.lock").exists()
+    assert (store_file.parent / "praxis.db").exists()
 
 
 @pytest.mark.anyio

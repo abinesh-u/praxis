@@ -1,14 +1,18 @@
-"""Use case for providing clarification to an ambiguous commitment."""
+"""Use case for providing clarification to an ambiguous commitment.
+
+Leverages the core CommitmentIntakeEngine to provide high depth and transactional
+integrity at the intake seam.
+"""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel
 
-from praxis_core.entities.task import Task
-from praxis_core.errors import EntityNotFoundError
+from praxis_core.intake.contract import ClarificationRequest, IntakeStatus
+from praxis_core.intake.engine import CommitmentIntakeEngine
 from praxis_core.ports.clock import Clock, SystemClock
 from praxis_core.ports.task_extractor import TaskExtractor
 from praxis_core.ports.unit_of_work import UnitOfWork
@@ -33,72 +37,31 @@ class ClarifyCommitmentUseCase:
         uow: UnitOfWork,
         extractor: TaskExtractor,
         clock: Clock | None = None,
+        engine: CommitmentIntakeEngine | None = None,
     ) -> None:
         self.uow = uow
         self.extractor = extractor
         self.clock = clock or SystemClock()
+        self.engine = engine or CommitmentIntakeEngine(
+            uow=uow,
+            extractor=extractor,
+            clock=self.clock,
+        )
 
     async def execute(self, cmd: ClarifyCommitmentCommand) -> CaptureCommitmentResult:
-        ref_time = cmd.reference_time or self.clock.now()
-        if ref_time.tzinfo is None:
-            ref_time = ref_time.replace(tzinfo=UTC)
-
-        async with self.uow:
-            commitment = await self.uow.commitments.get_for_owner(
-                cmd.commitment_id,
-                cmd.owner_id,
-            )
-            if commitment is None:
-                raise EntityNotFoundError("Commitment", cmd.commitment_id)
-
-            combined_text = (
-                f"{commitment.raw_text}\nUser Clarification: {cmd.clarification_response}"
-            )
-
-            extracted = await self.extractor.extract(
-                combined_text,
-                reference_time=ref_time,
-                user_timezone=cmd.user_timezone,
-            )
-
-            if extracted.clarification_needed:
-                prompt = extracted.clarification_prompt or "Further clarification needed"
-                commitment.request_clarification(prompt)
-                await self.uow.commitments.save(commitment)
-                await self.uow.commit()
-                return CaptureCommitmentResult(
-                    commitment=commitment,
-                    clarification_needed=True,
-                    clarification_prompt=prompt,
-                )
-
-            commitment.record_interpretation(
-                extracted.title,
-                {"clarification": cmd.clarification_response},
-            )
-            await self.uow.commitments.save(commitment)
-
-            task = Task(
-                owner_id=cmd.owner_id,
-                title=extracted.title,
-                description=extracted.description,
-                priority=extracted.priority,
-                commitment_id=commitment.id,
-                due_date=extracted.due_date,
-                scheduled_date=extracted.scheduled_date,
-            )
-            action = task.add_next_action(
-                description=extracted.next_action_description,
-                tool_hint=extracted.suggested_tool_hint,
-                tool_args_hint=extracted.suggested_tool_args,
-            )
-
-            self.uow.track_task(task)
-            await self.uow.tasks.save(task)
-            await self.uow.commit()
-
-            return CaptureCommitmentResult(
-                commitment=commitment,
-                task=task,
-                next_action=action,
-            )
+        """Execute commitment clarification through the intake engine seam."""
+        req = ClarificationRequest(
+            commitment_id=cmd.commitment_id,
+            owner_id=cmd.owner_id,
+            clarification_response=cmd.clarification_response,
+            user_timezone=cmd.user_timezone,
+            reference_time=cmd.reference_time,
+        )
+        outcome = await self.engine.clarify(req)
+        return CaptureCommitmentResult(
+            commitment=outcome.commitment,
+            task=outcome.task,
+            next_action=outcome.next_action,
+            clarification_needed=(outcome.status == IntakeStatus.AWAITING_CLARIFICATION),
+            clarification_prompt=outcome.clarification_prompt,
+        )

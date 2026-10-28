@@ -1,5 +1,11 @@
 """Ports package for Praxis Core."""
 
+from praxis_core.ports.action_dispatcher import (
+    ActionDispatcher,
+    DispatchSpec,
+    DispatchStatus,
+    RawDispatchResult,
+)
 from praxis_core.ports.agent_runner import AgentRunner, AgentRunOutcome
 from praxis_core.ports.approval_repository import (
     ApprovalRepository,
@@ -15,6 +21,11 @@ from praxis_core.ports.commitment_repository import (
     CommitmentRepository,
     InMemoryCommitmentRepository,
 )
+from praxis_core.ports.status_reconciler import (
+    RawReconcileResult,
+    ReconcileStatus,
+    StatusReconciler,
+)
 from praxis_core.ports.task_extractor import ExtractedTaskData, TaskExtractor
 from praxis_core.ports.task_repository import (
     InMemoryTaskRepository,
@@ -23,6 +34,7 @@ from praxis_core.ports.task_repository import (
 from praxis_core.ports.unit_of_work import InMemoryUnitOfWork, UnitOfWork
 
 __all__ = [
+    "ActionDispatcher",
     "AgentRunOutcome",
     "AgentRunner",
     "ApprovalRepository",
@@ -30,6 +42,8 @@ __all__ = [
     "AuditSink",
     "Clock",
     "CommitmentRepository",
+    "DispatchSpec",
+    "DispatchStatus",
     "ExtractedTaskData",
     "FrozenClock",
     "InMemoryApprovalRepository",
@@ -38,6 +52,10 @@ __all__ = [
     "InMemoryCommitmentRepository",
     "InMemoryTaskRepository",
     "InMemoryUnitOfWork",
+    "RawDispatchResult",
+    "RawReconcileResult",
+    "ReconcileStatus",
+    "StatusReconciler",
     "SystemClock",
     "TaskExtractor",
     "TaskRepository",

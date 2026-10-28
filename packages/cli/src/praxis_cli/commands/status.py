@@ -29,23 +29,23 @@ async def _status(profile: str | None) -> None:
         uow = get_uow(cfg)
 
         async with uow:
-            all_tasks = await uow.tasks.list_by_owner(cfg.profile)
+            counts = await uow.tasks.count_by_status(cfg.profile)
             pending_approvals = await uow.approvals.list_pending(cfg.profile)
 
         terminal_states = (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
-        active = [t for t in all_tasks if t.status not in terminal_states]
-        in_prog = [t for t in all_tasks if t.status == TaskStatus.IN_PROGRESS]
-        awaiting_appr = [t for t in all_tasks if t.status == TaskStatus.AWAITING_APPROVAL]
-        failed = [t for t in all_tasks if t.status == TaskStatus.FAILED]
+        active_count = sum(cnt for status, cnt in counts.items() if status not in terminal_states)
+        in_prog_count = counts.get(TaskStatus.IN_PROGRESS, 0)
+        awaiting_appr_count = counts.get(TaskStatus.AWAITING_APPROVAL, 0)
+        failed_count = counts.get(TaskStatus.FAILED, 0)
 
         console.print(f"[bold sky_blue1]Praxis Status — Profile: {cfg.profile}[/bold sky_blue1]\n")
-        console.print(f"  Active Tasks:       [bold white]{len(active)}[/bold white]")
-        console.print(f"  In Progress:        [sky_blue1]{len(in_prog)}[/sky_blue1]")
+        console.print(f"  Active Tasks:       [bold white]{active_count}[/bold white]")
+        console.print(f"  In Progress:        [sky_blue1]{in_prog_count}[/sky_blue1]")
         console.print(
-            f"  Awaiting Approval:  [yellow3]{len(awaiting_appr)}[/yellow3] "
+            f"  Awaiting Approval:  [yellow3]{awaiting_appr_count}[/yellow3] "
             f"({len(pending_approvals)} request tokens)"
         )
-        console.print(f"  Needs Attention:    [indian_red1]{len(failed)}[/indian_red1]")
+        console.print(f"  Needs Attention:    [indian_red1]{failed_count}[/indian_red1]")
         console.print(f"  Timezone:           [grey62]{cfg.timezone}[/grey62]\n")
         console.print("Run [bold white]praxis today[/bold white] to see your current action.")
     except Exception as exc:

@@ -22,7 +22,14 @@ from praxis_core.entities.approval import ActionSpecification
 from praxis_core.entities.evidence import Evidence
 from praxis_core.entities.next_action import NextAction
 from praxis_core.entities.task import Task
+from praxis_core.ports.action_dispatcher import (
+    DispatchSpec,
+    RawDispatchResult,
+)
 from praxis_core.ports.agent_runner import AgentRunOutcome
+from praxis_core.ports.status_reconciler import (
+    RawReconcileResult,
+)
 
 
 class WebhookRunner:
@@ -378,3 +385,193 @@ class WebhookRunner:
             output=document,
             provider_request_id=provider_request_id,
         )
+
+    async def dispatch(self, spec: DispatchSpec) -> RawDispatchResult:
+        """Dispatch authorized action specification through HTTP webhook transport."""
+        if spec.tool_name != "webhook_post":
+            return RawDispatchResult(
+                status="failed",
+                error="Only webhook_post is executable",
+                failure_final=True,
+            )
+        destination_error = self._destination_error()
+        if destination_error:
+            return RawDispatchResult(
+                status="failed",
+                error=destination_error,
+                failure_final=True,
+            )
+        resolved_error = await self._resolved_destination_error(self.endpoint)
+        if resolved_error:
+            return RawDispatchResult(status="outcome_unknown", error=resolved_error)
+
+        payload: dict[str, Any] = spec.canonical_args
+        provider_request_id: str | None = None
+        task_id_str = spec.destination_context.get("task_id", "")
+        try:
+            async with (
+                httpx.AsyncClient(
+                    timeout=self.timeout,
+                    follow_redirects=False,
+                    transport=self.transport,
+                ) as client,
+                client.stream(
+                    "POST",
+                    self.endpoint,
+                    json={
+                        "task_id": task_id_str,
+                        "attempt_id": str(spec.attempt_id),
+                        "payload": payload,
+                    },
+                    headers=self._provider_headers(spec.idempotency_key),
+                ) as response,
+            ):
+                provider_request_id = response.headers.get("X-Operation-ID")
+                document, parse_error = await self._read_json(response)
+                status_code = response.status_code
+        except httpx.TimeoutException:
+            return RawDispatchResult(
+                status="outcome_unknown",
+                error="Provider timeout after dispatch; reconcile before retrying",
+                provider_operation_id=provider_request_id,
+            )
+        except httpx.HTTPError as exc:
+            return RawDispatchResult(
+                status="outcome_unknown",
+                error=f"Provider request failed after dispatch; reconcile before retrying: {exc}",
+                provider_operation_id=provider_request_id,
+            )
+
+        if parse_error or document is None:
+            return RawDispatchResult(
+                status="outcome_unknown",
+                error=f"{parse_error}; reconcile before retrying",
+            )
+        operation_id = document.get("operation_id")
+        provider_status = document.get("status")
+        if status_code >= 500:
+            return RawDispatchResult(
+                status="outcome_unknown",
+                error=f"Provider HTTP {response.status_code}; reconcile before retrying",
+            )
+        if provider_status == "failed" and document.get("failure_final") is True:
+            return RawDispatchResult(
+                status="failed",
+                error=document.get("error") or "Provider reported execution failure",
+                raw_payload=document,
+                provider_operation_id=str(operation_id) if operation_id else provider_request_id,
+                failure_final=True,
+            )
+        if provider_status == "completed":
+            return RawDispatchResult(
+                status="completed",
+                raw_payload=document,
+                provider_operation_id=str(operation_id) if operation_id else None,
+            )
+        return RawDispatchResult(
+            status="outcome_unknown",
+            error="Provider accepted or partially processed the request; reconcile before retrying",
+            raw_payload=document,
+            provider_operation_id=str(operation_id) if operation_id else None,
+        )
+
+    async def inspect_status(
+        self,
+        attempt_id: UUID,
+        idempotency_key: str,
+        provider_operation_id: str | None,
+    ) -> RawReconcileResult:
+        """Read provider operation state without issuing another POST."""
+        del attempt_id
+        destination_error = self._destination_error()
+        if destination_error:
+            return RawReconcileResult(status="outcome_unknown", error=destination_error)
+        if not provider_operation_id:
+            return RawReconcileResult(
+                status="outcome_unknown",
+                error="Provider operation identifier is unavailable for reconciliation",
+                provider_operation_id=provider_operation_id,
+            )
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,256}", provider_operation_id):
+            return RawReconcileResult(
+                status="outcome_unknown",
+                error="Provider operation identifier is invalid for status lookup",
+            )
+        status_endpoint = os.getenv("PRAXIS_WEBHOOK_STATUS_URL")
+        status_error = self._validate_destination(status_endpoint) if status_endpoint else None
+        if status_error:
+            return RawReconcileResult(status="outcome_unknown", error=status_error)
+        if (
+            status_endpoint
+            and os.getenv("PRAXIS_WEBHOOK_STATUS_AUTH_TOKEN")
+            and self._requires_tls(status_endpoint)
+        ):
+            return RawReconcileResult(
+                status="outcome_unknown",
+                error="Authenticated external status destinations must use HTTPS",
+            )
+        status_base = status_endpoint or self.endpoint
+        headers = self._status_headers(idempotency_key, status_base)
+        if headers is None:
+            return RawReconcileResult(
+                status="outcome_unknown",
+                error="Status endpoint origin differs; configure a separate status credential",
+            )
+        if status_endpoint:
+            url = status_endpoint.rstrip("/") + "/" + quote(provider_operation_id, safe="")
+        else:
+            url = self.endpoint.rstrip("/") + "/operations/" + quote(provider_operation_id, safe="")
+        resolved_error = await self._resolved_destination_error(url)
+        if resolved_error:
+            return RawReconcileResult(status="outcome_unknown", error=resolved_error)
+        try:
+            async with (
+                httpx.AsyncClient(
+                    timeout=self.timeout,
+                    follow_redirects=False,
+                    transport=self.transport,
+                ) as client,
+                client.stream("GET", url, headers=headers) as response,
+            ):
+                document, parse_error = await self._read_json(response)
+        except httpx.TimeoutException:
+            return RawReconcileResult(
+                status="outcome_unknown",
+                error="Provider status lookup timed out",
+                provider_operation_id=provider_operation_id,
+            )
+        except httpx.HTTPError as exc:
+            return RawReconcileResult(
+                status="outcome_unknown",
+                error=f"Provider status lookup failed: {exc}",
+            )
+        if parse_error or document is None:
+            return RawReconcileResult(
+                status="outcome_unknown",
+                error=parse_error or "Provider status was not JSON",
+            )
+        provider_status = document.get("status")
+        if provider_status == "completed":
+            return RawReconcileResult(
+                status="completed",
+                raw_payload=document,
+                provider_operation_id=provider_operation_id,
+            )
+        if provider_status == "failed" and document.get("failure_final") is True:
+            return RawReconcileResult(
+                status="failed",
+                error=document.get("error") or "Provider reported operation failure",
+                raw_payload=document,
+                provider_operation_id=provider_operation_id,
+                failure_final=True,
+            )
+        return RawReconcileResult(
+            status="outcome_unknown",
+            error="Provider operation remains pending or unconfirmed",
+            raw_payload=document,
+            provider_operation_id=provider_operation_id,
+        )
+
+
+WebhookDispatcher = WebhookRunner
+WebhookStatusReconciler = WebhookRunner

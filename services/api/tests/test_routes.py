@@ -16,6 +16,7 @@ from praxis_core.ports.task_extractor import ExtractedTaskData
 from praxis_core.ports.unit_of_work import InMemoryUnitOfWork
 from praxis_core.use_cases import (
     CaptureCommitmentUseCase,
+    ClarifyCommitmentUseCase,
     CompleteTaskUseCase,
     GetDailyAgendaUseCase,
     ResolveApprovalUseCase,
@@ -42,6 +43,7 @@ def make_client() -> tuple[httpx.AsyncClient, InMemoryUnitOfWork]:
         make_uow=lambda: uow,
         make_execute_next_action=lambda: None,
         make_reconcile_execution=lambda: None,
+        make_clarify_commitment=lambda: ClarifyCommitmentUseCase(uow, StubExtractor()),
     )
     app = FastAPI()
     app.include_router(create_api_router(lambda _request: services))
@@ -167,3 +169,35 @@ async def test_list_and_decide_pending_approval():
         assert (await client.get("/approvals", params={"owner_id": "abi"})).json()[
             "approvals"
         ] == []
+
+
+@pytest.mark.anyio
+async def test_clarify_commitment_endpoint():
+    client, uow = make_client()
+    async with client:
+        # First capture
+        captured = await capture_task(client)
+        commitment_id = captured["commitment"]["id"]
+
+        # Clarify via HTTP route
+        clarify_res = await client.post(
+            f"/commitments/{commitment_id}/clarify",
+            json={
+                "owner_id": "abi",
+                "clarification_response": "Focus on the frontend release notes",
+            },
+        )
+        assert clarify_res.status_code == 200, clarify_res.text
+        data = clarify_res.json()
+        assert data["task"]["title"] == "Send project update"
+        assert data["clarification_needed"] is False
+
+        # Non-existent commitment returns 404
+        missing_res = await client.post(
+            "/commitments/00000000-0000-0000-0000-000000000000/clarify",
+            json={
+                "owner_id": "abi",
+                "clarification_response": "details",
+            },
+        )
+        assert missing_res.status_code == 404

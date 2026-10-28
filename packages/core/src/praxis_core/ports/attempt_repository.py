@@ -39,6 +39,14 @@ class AttemptRepository(Protocol):
         """Return bounded attempt summaries grouped by owner-scoped task IDs."""
         ...
 
+    async def list_for_task(
+        self,
+        task_id: UUID,
+        owner_id: str,
+    ) -> list[ExecutionAttempt]:
+        """Return attempts for a single owner-scoped task ID."""
+        ...
+
 
 class InMemoryAttemptRepository:
     """In-memory attempt repository for testing."""
@@ -83,3 +91,16 @@ class InMemoryAttemptRepository:
         for attempts in grouped.values():
             attempts.sort(key=lambda value: value.started_at, reverse=True)
         return grouped
+
+    async def list_for_task(
+        self,
+        task_id: UUID,
+        owner_id: str,
+    ) -> list[ExecutionAttempt]:
+        attempts = [
+            attempt.model_copy(deep=True)
+            for attempt in self._attempts.values()
+            if attempt.owner_id == owner_id and attempt.task_id == task_id
+        ]
+        attempts.sort(key=lambda value: value.started_at, reverse=True)
+        return attempts

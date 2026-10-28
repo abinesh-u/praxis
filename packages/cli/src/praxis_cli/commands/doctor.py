@@ -43,21 +43,44 @@ async def _doctor(profile: str | None) -> None:
                 f"  ℹ Storage Directory: Uninitialized ({cfg.store_path.parent})", style="grey62"
             )
 
-        # 2. Lock file state
-        lock_file = cfg.store_path.with_suffix(".lock")
-        if lock_file.exists():
-            console.print(f"  ✔ Sidecar Lock File: Healthy ({lock_file.name})", style="green3")
+        # 2. Storage database state
+        db_file = cfg.db_path
+        if db_file.exists():
+            console.print(f"  ✔ SQLite Database: Healthy ({db_file.name})", style="green3")
         else:
-            console.print("  ℹ Sidecar Lock File: Clean (not active)", style="grey62")
+            console.print("  ℹ SQLite Database: Clean (uninitialized)", style="grey62")
 
         # 3. Store file & orphaned attempts
         uow = get_uow(cfg)
         async with uow:
-            console.print("  ✔ Storage Database: Accessible and valid JSON", style="green3")
+            console.print("  ✔ Storage Database: Accessible and schema valid", style="green3")
 
             # Check orphaned running attempts
             reconciled_count = 0
-            if hasattr(uow.attempts, "_attempts"):
+            if hasattr(uow, "_connection") and uow._connection:
+                query = (
+                    "SELECT payload FROM execution_attempts "
+                    "WHERE owner_id = ? AND status = 'running'"
+                )
+                rows = uow._connection.execute(query, (cfg.profile,)).fetchall()
+                for row in rows:
+                    from praxis_core.entities.execution_attempt import ExecutionAttempt
+
+                    att = ExecutionAttempt.model_validate_json(row["payload"])
+                    att.mark_outcome_unknown("Process interrupted; external outcome unknown")
+                    await uow.attempts.save(att)
+                    task = await uow.tasks.get_for_owner(att.task_id, cfg.profile)
+                    if task and task.status in (
+                        TaskStatus.IN_PROGRESS,
+                        TaskStatus.AWAITING_APPROVAL,
+                    ):
+                        task.fail(
+                            reason="External action outcome unknown (process interrupted)",
+                            recovery_suggestion="Inspect workspace before retrying action",
+                        )
+                        await uow.tasks.save(task)
+                    reconciled_count += 1
+            elif hasattr(uow.attempts, "_attempts"):
                 for att_raw in list(uow.attempts._attempts.values()):
                     if (
                         att_raw.get("owner_id") == cfg.profile
@@ -76,17 +99,17 @@ async def _doctor(profile: str | None) -> None:
                                 "Inspect workspace before retrying action"
                             )
                         reconciled_count += 1
-                if reconciled_count > 0:
-                    await uow.commit()
-                    console.print(
-                        f"  ⚠️ Reconciled {reconciled_count} interrupted running attempt(s) "
-                        "to 'outcome_unknown'.",
-                        style="yellow3",
-                    )
-                else:
-                    console.print(
-                        "  ✔ Execution Attempts: No orphaned or interrupted runs", style="green3"
-                    )
+            if reconciled_count > 0:
+                await uow.commit()
+                console.print(
+                    f"  ⚠️ Reconciled {reconciled_count} interrupted running attempt(s) "
+                    "to 'outcome_unknown'.",
+                    style="yellow3",
+                )
+            else:
+                console.print(
+                    "  ✔ Execution Attempts: No orphaned or interrupted runs", style="green3"
+                )
 
         # 4. Timezone
         console.print(f"  ✔ Timezone: {cfg.timezone}", style="green3")

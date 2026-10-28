@@ -1,8 +1,12 @@
-"""Use case for capturing commitments and decomposing into tasks with next actions."""
+"""Use case for capturing commitments and decomposing into tasks with next actions.
+
+Leverages the core CommitmentIntakeEngine to provide high depth and transactional
+integrity at the intake seam.
+"""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 from pydantic import BaseModel
 
@@ -10,6 +14,8 @@ from praxis_core.entities.commitment import Commitment
 from praxis_core.entities.common import SourceChannel
 from praxis_core.entities.next_action import NextAction
 from praxis_core.entities.task import Task
+from praxis_core.intake.contract import IntakeRequest, IntakeStatus
+from praxis_core.intake.engine import CommitmentIntakeEngine
 from praxis_core.ports.clock import Clock, SystemClock
 from praxis_core.ports.task_extractor import TaskExtractor
 from praxis_core.ports.unit_of_work import UnitOfWork
@@ -37,100 +43,39 @@ class CaptureCommitmentResult(BaseModel):
 
 
 class CaptureCommitmentUseCase:
-    """Orchestrates natural language capture, AI extraction, and aggregate assembly."""
+    """Orchestrates natural language capture, extraction, and aggregate assembly."""
 
     def __init__(
         self,
         uow: UnitOfWork,
         extractor: TaskExtractor,
         clock: Clock | None = None,
+        engine: CommitmentIntakeEngine | None = None,
     ) -> None:
         self.uow = uow
         self.extractor = extractor
         self.clock = clock or SystemClock()
+        self.engine = engine or CommitmentIntakeEngine(
+            uow=uow,
+            extractor=extractor,
+            clock=self.clock,
+        )
 
     async def execute(self, cmd: CaptureCommitmentCommand) -> CaptureCommitmentResult:
-        ref_time = cmd.reference_time or self.clock.now()
-        if ref_time.tzinfo is None:
-            ref_time = ref_time.replace(tzinfo=UTC)
-
-        async with self.uow:
-            if cmd.idempotency_key:
-                existing_c = await self.uow.commitments.find_by_idempotency_key(
-                    cmd.idempotency_key,
-                    cmd.owner_id,
-                )
-                if existing_c is not None:
-                    all_tasks = await self.uow.tasks.list_by_owner(cmd.owner_id)
-                    matched_task = next(
-                        (t for t in all_tasks if t.commitment_id == existing_c.id),
-                        None,
-                    )
-                    next_act = matched_task.get_current_next_action() if matched_task else None
-                    return CaptureCommitmentResult(
-                        commitment=existing_c,
-                        task=matched_task,
-                        next_action=next_act,
-                        clarification_needed=existing_c.clarification_needed,
-                        clarification_prompt=existing_c.clarification_prompt,
-                    )
-
-            commitment = Commitment(
-                owner_id=cmd.owner_id,
-                raw_text=cmd.raw_text,
-                source=cmd.source,
-                captured_at=ref_time,
-                idempotency_key=cmd.idempotency_key,
-            )
-            await self.uow.commitments.save(commitment)
-
-            extracted = await self.extractor.extract(
-                cmd.raw_text,
-                reference_time=ref_time,
-                user_timezone=cmd.user_timezone,
-            )
-
-            if extracted.clarification_needed:
-                prompt = (
-                    extracted.clarification_prompt
-                    or "Could you clarify the specific details of this commitment?"
-                )
-                commitment.request_clarification(prompt)
-                await self.uow.commitments.save(commitment)
-                await self.uow.commit()
-                return CaptureCommitmentResult(
-                    commitment=commitment,
-                    clarification_needed=True,
-                    clarification_prompt=prompt,
-                )
-
-            commitment.record_interpretation(
-                extracted.title,
-                {"priority": extracted.priority.value},
-            )
-            await self.uow.commitments.save(commitment)
-
-            task = Task(
-                owner_id=cmd.owner_id,
-                title=extracted.title,
-                description=extracted.description,
-                priority=extracted.priority,
-                commitment_id=commitment.id,
-                due_date=extracted.due_date,
-                scheduled_date=extracted.scheduled_date,
-            )
-            action = task.add_next_action(
-                description=extracted.next_action_description,
-                tool_hint=extracted.suggested_tool_hint,
-                tool_args_hint=extracted.suggested_tool_args,
-            )
-
-            self.uow.track_task(task)
-            await self.uow.tasks.save(task)
-            await self.uow.commit()
-
-            return CaptureCommitmentResult(
-                commitment=commitment,
-                task=task,
-                next_action=action,
-            )
+        """Execute commitment capture through the intake engine seam."""
+        req = IntakeRequest(
+            owner_id=cmd.owner_id,
+            raw_text=cmd.raw_text,
+            source=cmd.source,
+            user_timezone=cmd.user_timezone,
+            idempotency_key=cmd.idempotency_key,
+            reference_time=cmd.reference_time,
+        )
+        outcome = await self.engine.capture(req)
+        return CaptureCommitmentResult(
+            commitment=outcome.commitment,
+            task=outcome.task,
+            next_action=outcome.next_action,
+            clarification_needed=(outcome.status == IntakeStatus.AWAITING_CLARIFICATION),
+            clarification_prompt=outcome.clarification_prompt,
+        )

@@ -401,3 +401,57 @@ paths:
 Run the full configured suite plus Ruff and `git diff --check` before handing
 off. The API tests use `httpx.AsyncClient` with `ASGITransport`; do not
 reintroduce Starlette's deprecated synchronous `TestClient` path.
+
+## 19. Skills and agent runtime roadmap (M6 — M8)
+
+The procedural skills subsystem currently sits outside the primary execution
+path. Exposing skills in the UI before they influence real execution makes them
+manageable, but not yet operationally useful. Therefore, the implementation
+sequence is:
+
+1. **M6 — Agent Runtime Integration**: Connect `ConversationLoop` and
+   `SkillStore` to the existing execution architecture through a bounded
+   `ActionDispatcher` adapter. Outcome: tasks can leverage relevant procedural
+   skills during execution.
+2. **M7 — Verified Skill Learning**: Integrate `run_learning_loop()` into
+   successful execution completion, with provenance, validation, and
+   controlled persistence. Outcome: multi-step runs produce reusable
+   procedural knowledge.
+3. **M8 — Skills Library UI**: Add tenant-scoped skill listing and management
+   endpoints, followed by a Skills Library view in the existing Web UI.
+   Outcome: operators can inspect, create, and maintain procedural knowledge.
+
+### M6 architectural invariants
+
+- **Guidance vs. Authority**: A procedural skill is guidance, not authority. A
+  skill may describe a consequential operation, but the backend must
+  independently authorize that operation at the tool security perimeter.
+- **Bounded Autonomous Loop**: The agent runtime module must obey explicit
+  limits on tool call counts, step budgets, timeouts, and allowlisted actions.
+- **Seam Separation**: `ExecuteNextActionUseCase` continues orchestrating
+  execution through established `ActionDispatcher` and `StatusReconciler`
+  interfaces rather than absorbing agent-loop implementation details.
+- **Explicit Dispatch Strategy**: The dispatch strategy is selected from
+  explicit action metadata or a validated action type, never guessed from
+  natural-language text alone.
+- **Skill Selection Locality**: Skills are loaded from `SkillStore` preserving
+  file locality, matched using keyword triggers, and injected into the prompt
+  formatter to bound prompt depth.
+- **Checkpointing and Recovery**: Preserves execution state to recover from
+  interruptions without repeating external side effects.
+- **Untrusted Candidate Skills**: Procedural skills extracted from runs are
+  untrusted candidates across the validation seam. Untrusted task content and
+  tool outputs must never be converted into privileged, active prompt instructions
+  without independent validation.
+
+### M6 acceptance criteria
+
+1. Existing `WebhookRunner` executions continue to work without regressions.
+2. Agent-backed execution uses the existing dispatcher and execution contracts.
+3. Relevant skills are selected and injected into the agent prompt.
+4. Tool access is allowlisted, bounded, and authorization-aware.
+5. Execution results preserve evidence and represent uncertain outcomes
+   accurately.
+6. Timeouts and interruptions cannot silently trigger duplicate side effects.
+7. Tests cover skill matching, tool limits, approval enforcement, failure
+   recovery, and existing execution regressions.

@@ -40,3 +40,4 @@ pnpm-debug.log*
 # Local Databases / Persistent storage
 .data/
 *.sqlite3
+*.db

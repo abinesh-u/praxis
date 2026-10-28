@@ -7,9 +7,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from praxis_core.entities.evidence import Evidence
-from praxis_core.errors import DomainError, EntityNotFoundError
+from praxis_core.errors import DomainError, EntityNotFoundError, IntakeValidationError
 from praxis_core.use_cases import (
     CaptureCommitmentCommand,
+    ClarifyCommitmentCommand,
     CompleteTaskCommand,
     ExecuteNextActionCommand,
     ReconcileExecutionCommand,
@@ -24,6 +25,7 @@ from praxis_api.schemas import (
     ApprovalResponse,
     CaptureTaskRequest,
     CaptureTaskResponse,
+    ClarifyCommitmentRequest,
     CompleteTaskRequest,
     ExecuteTaskRequest,
     ExecutionResponse,
@@ -55,6 +57,8 @@ def identity_from_app_state(request: Request) -> IdentityProvider:
 def _domain_http_error(error: DomainError) -> HTTPException:
     if isinstance(error, EntityNotFoundError):
         code = status.HTTP_404_NOT_FOUND
+    elif isinstance(error, IntakeValidationError):
+        code = status.HTTP_422_UNPROCESSABLE_ENTITY
     else:
         # Core errors represent safe-to-expose conflicts with current workflow state.
         code = status.HTTP_409_CONFLICT
@@ -105,6 +109,37 @@ def create_api_router(
         except DomainError as error:
             raise _domain_http_error(error) from error
 
+    @router.post(
+        "/commitments/{commitment_id}/clarify",
+        response_model=CaptureTaskResponse,
+        status_code=status.HTTP_200_OK,
+        tags=["commitments"],
+    )
+    async def clarify_commitment(
+        commitment_id: UUID,
+        body: ClarifyCommitmentRequest,
+        request: Request,
+        services: Annotated[ApiServices, Depends(get_services)],
+    ) -> CaptureTaskResponse:
+        try:
+            owner_id = identity_from_app_state(request).resolve(request, body.owner_id)
+            if services.make_clarify_commitment is None:
+                raise HTTPException(
+                    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                    detail="Clarification is not configured in this runtime",
+                )
+            cmd = ClarifyCommitmentCommand(
+                commitment_id=commitment_id,
+                owner_id=owner_id,
+                clarification_response=body.clarification_response,
+                user_timezone=body.user_timezone,
+                reference_time=body.reference_time,
+            )
+            result = await services.make_clarify_commitment().execute(cmd)
+            return CaptureTaskResponse.from_result(result)
+        except DomainError as error:
+            raise _domain_http_error(error) from error
+
     @router.get("/tasks/today", response_model=TodayResponse, tags=["tasks"])
     async def get_today(
         owner_id: Annotated[str, Query(min_length=1, max_length=256)],
@@ -127,11 +162,20 @@ def create_api_router(
         owner_id: Annotated[str, Query(min_length=1, max_length=256)],
         request: Request,
         services: Annotated[ApiServices, Depends(get_services)],
+        limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+        offset: Annotated[int, Query(ge=0)] = 0,
     ) -> TaskListResponse:
         trusted_owner = identity_from_app_state(request).resolve(request, owner_id)
         async with services.make_uow() as uow:
-            tasks = await uow.tasks.list_by_owner(trusted_owner)
-        return TaskListResponse(tasks=[TaskResponse.from_entity(task) for task in tasks])
+            raw_tasks = await uow.tasks.list_by_owner(trusted_owner, limit=limit + 1, offset=offset)
+        has_more = len(raw_tasks) > limit
+        tasks = raw_tasks[:limit]
+        return TaskListResponse(
+            tasks=[TaskResponse.from_entity(task) for task in tasks],
+            limit=limit,
+            offset=offset,
+            has_more=has_more,
+        )
 
     @router.get("/tasks/{task_id}", response_model=TaskResponse, tags=["tasks"])
     async def get_task(

@@ -11,7 +11,12 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from praxis_api.persistence import sqlite_path_from_url
+from praxis_api.persistence import schema_version, sqlite_path_from_url
+
+
+def get_schema_version(database_url: str) -> int:
+    """Return the schema version of a Praxis database for diagnostics."""
+    return schema_version(database_url)
 
 
 def _disk_path(database_url: str) -> Path:
