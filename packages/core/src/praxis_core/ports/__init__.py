@@ -21,6 +21,7 @@ from praxis_core.ports.commitment_repository import (
     CommitmentRepository,
     InMemoryCommitmentRepository,
 )
+from praxis_core.ports.skill_learner import SkillLearner
 from praxis_core.ports.status_reconciler import (
     RawReconcileResult,
     ReconcileStatus,
@@ -55,6 +56,7 @@ __all__ = [
     "RawDispatchResult",
     "RawReconcileResult",
     "ReconcileStatus",
+    "SkillLearner",
     "StatusReconciler",
     "SystemClock",
     "TaskExtractor",

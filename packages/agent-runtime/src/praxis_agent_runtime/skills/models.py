@@ -33,3 +33,17 @@ class Skill(BaseModel):
     def is_candidate(self) -> bool:
         """Return True if this skill is an untrusted candidate pending validation."""
         return self.status == "candidate"
+
+    @property
+    def owner_id(self) -> str | None:
+        """Return the tenant owner identity associated with this skill provenance locality."""
+        if self.provenance and isinstance(self.provenance, dict):
+            return self.provenance.get("owner_id")
+        return None
+
+    @property
+    def attempt_id(self) -> str | None:
+        """Return the execution attempt ID associated with this candidate across the seam."""
+        if self.provenance and isinstance(self.provenance, dict):
+            return self.provenance.get("attempt_id")
+        return None

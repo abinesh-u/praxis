@@ -24,26 +24,51 @@ class SkillStore:
         self._dir = Path(skills_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
 
-    def load_all(self, include_candidates: bool = False) -> list[Skill]:
+    def load_all(
+        self,
+        include_candidates: bool = False,
+        owner_id: str | None = None,
+    ) -> list[Skill]:
         """Load skill files from the directory, defaulting to validated skills only.
 
         Isolates untrusted candidate skills by default to prevent injection into prompt depth.
+        Filters by owner_id to preserve tenant locality and isolation across the seam.
         """
         skills: list[Skill] = []
         for path in sorted(self._dir.glob("*.md")):
             skill = self._parse_file(path)
             if skill and (include_candidates or skill.is_validated):
+                if (
+                    owner_id is not None
+                    and skill.owner_id is not None
+                    and skill.owner_id != owner_id
+                ):
+                    continue
                 skills.append(skill)
         return skills
 
-    def load_candidates(self) -> list[Skill]:
-        """Load only untrusted candidate skills awaiting validation."""
+    def load_candidates(self, owner_id: str | None = None) -> list[Skill]:
+        """Load only untrusted candidate skills awaiting validation, scoped by tenant locality."""
         candidates: list[Skill] = []
         for path in sorted(self._dir.glob("*.md")):
             skill = self._parse_file(path)
             if skill and skill.is_candidate:
+                if (
+                    owner_id is not None
+                    and skill.owner_id is not None
+                    and skill.owner_id != owner_id
+                ):
+                    continue
                 candidates.append(skill)
         return candidates
+
+    def find_by_attempt_id(self, attempt_id: str) -> Skill | None:
+        """Find an existing candidate or validated skill matching an execution attempt ID."""
+        target = str(attempt_id)
+        for skill in self.load_all(include_candidates=True):
+            if skill.attempt_id == target:
+                return skill
+        return None
 
     def save(self, skill: Skill) -> Path:
         """Write a skill to disk as a Markdown file with YAML frontmatter."""

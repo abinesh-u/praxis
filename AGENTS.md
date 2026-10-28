@@ -455,3 +455,38 @@ sequence is:
 6. Timeouts and interruptions cannot silently trigger duplicate side effects.
 7. Tests cover skill matching, tool limits, approval enforcement, failure
    recovery, and existing execution regressions.
+
+### M7 architectural invariants
+
+- **Authoritative Trigger Only**: The learning loop triggers strictly after
+  an execution attempt transitions to terminal completed status with verified
+  evidence. Failed, interrupted, pending, or outcome-unknown runs never trigger
+  extraction.
+- **Strict Candidate Quarantine**: Candidate procedural knowledge is persisted
+  in a quarantined state. The skill matcher strictly excludes candidate skills
+  from active prompt depth until an operator explicitly promotes them.
+- **Provenance and Traceability**: Every candidate skill is cryptographically
+  and structurally bound to its source execution attempt ID, task ID, tenant
+  owner ID, and verified evidence receipt hash.
+- **Untrusted Content Sanitization**: Task descriptions, tool arguments, and
+  execution outputs are treated as untrusted data across the validation seam.
+  Control tags, markdown fence breakouts, and prompt injection role directives
+  are neutralized before storage.
+- **Deterministic Idempotency**: Candidate persistence is keyed by execution
+  attempt ID (`candidate_att_{attempt_id[:12]}`), preventing duplicate candidate
+  files or uncontained proliferation on retry.
+
+### M7 acceptance criteria
+
+1. Authoritative trigger: only terminal completed attempts with verified machine
+   evidence trigger candidate skill learning.
+2. Candidate quarantine: unpromoted candidate skills are excluded from matching
+   and never injected into agent prompt depth.
+3. Provenance validation: candidate skills retain verified evidence receipt hashes,
+   attempt IDs, and tenant owner IDs.
+4. Prompt injection defense: control tags, code block escapes, and instruction
+   override headers are sanitized across the validation seam.
+5. Idempotent persistence: repeated execution evaluations cannot produce duplicate
+   candidates.
+6. Zero execution regressions: all existing webhook, agent runtime, and approval
+   contracts pass without modification to their security invariants.

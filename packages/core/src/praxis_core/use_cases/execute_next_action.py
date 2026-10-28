@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -24,6 +25,7 @@ from praxis_core.ports.action_dispatcher import (
 )
 from praxis_core.ports.agent_runner import AgentRunner, AgentRunOutcome
 from praxis_core.ports.clock import Clock, SystemClock
+from praxis_core.ports.skill_learner import SkillLearner
 from praxis_core.ports.unit_of_work import UnitOfWork
 
 
@@ -46,6 +48,7 @@ class ExecuteNextActionResult(BaseModel):
     outcome: AgentRunOutcome
     approval_request: ApprovalRequest | None = None
     approval_token: str | None = None
+    learned_skill: Any | None = None
 
 
 class ExecuteNextActionUseCase:
@@ -57,6 +60,7 @@ class ExecuteNextActionUseCase:
         dispatcher: ActionDispatcher | AgentRunner | None = None,
         clock: Clock | None = None,
         runner: ActionDispatcher | AgentRunner | None = None,
+        skill_learner: SkillLearner | None = None,
     ) -> None:
         self.uow = uow
         resolved = dispatcher or runner
@@ -64,6 +68,7 @@ class ExecuteNextActionUseCase:
             raise ValueError("Either 'dispatcher' or 'runner' must be provided")
         self.dispatcher = resolved
         self.clock = clock or SystemClock()
+        self.skill_learner = skill_learner
 
     async def execute(self, cmd: ExecuteNextActionCommand) -> ExecuteNextActionResult:
         # Phase 1: Pre-execution risk assessment, authorization, and attempt persistence
@@ -408,6 +413,7 @@ class ExecuteNextActionUseCase:
                 (a for a in task.next_actions if a.id == attempt.action_id),
                 task.get_current_next_action() or task.next_actions[-1],
             )
+            learned_skill = None
 
             if raw_result.status == "awaiting_approval":
                 # Adapter halted for approval (e.g. interactive agent tool)
@@ -490,6 +496,7 @@ class ExecuteNextActionUseCase:
                         raw_result=raw_result,
                     )
 
+                learned_skill = None
                 if evidence and evidence.is_verified():
                     action.mark_completed(evidence_id=evidence.id)
                     attempt.mark_completed(evidence_id=evidence.id)
@@ -497,6 +504,20 @@ class ExecuteNextActionUseCase:
                     remaining_actions = [a for a in task.next_actions if not a.completed]
                     if not remaining_actions and evidence.target_task_id == task.id:
                         task.complete(evidence=evidence)
+
+                    # Trigger verified skill learning loop across the validation seam
+                    if self.skill_learner is not None:
+                        try:
+                            learned_skill = self.skill_learner.learn_from_execution(
+                                attempt_id=attempt.id,
+                                task_id=task.id,
+                                owner_id=cmd.owner_id,
+                                evidence=evidence,
+                                raw_payload=raw_result.raw_payload,
+                                action_description=action.description,
+                            )
+                        except Exception:
+                            learned_skill = None
 
                     normalized_outcome = AgentRunOutcome(
                         status="completed",
@@ -582,4 +603,5 @@ class ExecuteNextActionUseCase:
                 outcome=normalized_outcome,
                 approval_request=None,
                 approval_token=None,
+                learned_skill=learned_skill,
             )

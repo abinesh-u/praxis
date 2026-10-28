@@ -72,6 +72,7 @@ class AgentActionDispatcher(ActionDispatcher, StatusReconciler):
                 raw_payload={
                     "run_id": existing_run.run_id,
                     "status": "completed",
+                    "goal": existing_run.goal,
                     "steps": [s.model_dump() for s in existing_run.steps],
                     "tool_evidence": [
                         s.tool_result.evidence
@@ -191,6 +192,7 @@ class AgentActionDispatcher(ActionDispatcher, StatusReconciler):
                 raw_payload={
                     "run_id": run.run_id,
                     "status": "completed",
+                    "goal": run.goal,
                     "steps": [s.model_dump() for s in run.steps],
                     "tool_evidence": tool_evidence,
                     "output": run.steps[-1].content if run.steps else "Completed",

@@ -34,9 +34,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
         default_reconciler=webhook_runner,
     )
     router.register_dispatcher("webhook_post", webhook_runner, webhook_runner)
+    skill_learner = None
 
     try:
         from praxis_agent_runtime.adapter import AgentActionDispatcher
+        from praxis_agent_runtime.learning.learning_loop import AgentSkillLearner
         from praxis_agent_runtime.skills.skill_store import SkillStore
         from praxis_agent_runtime.tools.builtin.workspace_fs import (
             FsListDirTool,
@@ -78,6 +80,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         )
         router.register_dispatcher("agent_runtime", agent_dispatcher, agent_dispatcher)
         router.register_dispatcher("agent_loop", agent_dispatcher, agent_dispatcher)
+        skill_learner = AgentSkillLearner(skill_store=skill_store)
     except Exception:
         pass
 
@@ -96,7 +99,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
             make_resolve_approval=lambda: ResolveApprovalUseCase(uow=make_uow()),
             make_uow=make_uow,
             make_execute_next_action=lambda: ExecuteNextActionUseCase(
-                uow=make_uow(), runner=runner
+                uow=make_uow(), runner=runner, skill_learner=skill_learner
             ),
             make_reconcile_execution=lambda: ReconcileExecutionUseCase(
                 uow=make_uow(), runner=runner
