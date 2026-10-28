@@ -79,67 +79,79 @@ class ExecuteNextActionUseCase:
                 action = task.add_next_action("Complete remaining task objectives")
 
             # Check idempotency first to safely replay completed, waiting, or running attempts
+            existing_attempt = None
             if cmd.idempotency_key:
                 existing_attempt = await self.uow.attempts.find_by_idempotency_key(
                     cmd.idempotency_key,
                     cmd.owner_id,
                 )
-                if existing_attempt is not None:
-                    matched_action = next(
-                        (a for a in task.next_actions if a.id == existing_attempt.action_id),
-                        action,
+            if existing_attempt is None and cmd.approval_token:
+                task_attempts = await self.uow.attempts.list_for_task(task.id, cmd.owner_id)
+                existing_attempt = next(
+                    (
+                        att
+                        for att in reversed(task_attempts)
+                        if att.action_id == action.id and att.status == "awaiting_approval"
+                    ),
+                    None,
+                )
+
+            if existing_attempt is not None:
+                matched_action = next(
+                    (a for a in task.next_actions if a.id == existing_attempt.action_id),
+                    action,
+                )
+                if existing_attempt.status == "completed":
+                    return ExecuteNextActionResult(
+                        task=task,
+                        action=matched_action,
+                        attempt=existing_attempt,
+                        outcome=AgentRunOutcome(
+                            status="completed",
+                            output="Action already completed (idempotent replay)",
+                        ),
                     )
-                    if existing_attempt.status == "completed":
-                        return ExecuteNextActionResult(
-                            task=task,
-                            action=matched_action,
-                            attempt=existing_attempt,
-                            outcome=AgentRunOutcome(
-                                status="completed",
-                                output="Action already completed (idempotent replay)",
+                if existing_attempt.status == "awaiting_approval" and not cmd.approval_token:
+                    approval = None
+                    if existing_attempt.approval_id:
+                        approval = await self.uow.approvals.get_for_owner(
+                            existing_attempt.approval_id,
+                            cmd.owner_id,
+                        )
+                    return ExecuteNextActionResult(
+                        task=task,
+                        action=matched_action,
+                        attempt=existing_attempt,
+                        outcome=AgentRunOutcome(status="awaiting_approval"),
+                        approval_request=approval,
+                    )
+                if existing_attempt.status == "outcome_unknown":
+                    return ExecuteNextActionResult(
+                        task=task,
+                        action=matched_action,
+                        attempt=existing_attempt,
+                        outcome=AgentRunOutcome(
+                            status="outcome_unknown",
+                            error=existing_attempt.error
+                            or "External outcome requires reconciliation before retry",
+                            provider_request_id=existing_attempt.provider_request_id,
+                        ),
+                    )
+                if existing_attempt.status == "running":
+                    # Process crashed during in-flight execution; never blindly redispatch!
+                    return ExecuteNextActionResult(
+                        task=task,
+                        action=matched_action,
+                        attempt=existing_attempt,
+                        outcome=AgentRunOutcome(
+                            status="outcome_unknown",
+                            error=(
+                                "Execution attempt is in-flight or was interrupted; "
+                                "reconcile provider state before retry"
                             ),
-                        )
-                    if existing_attempt.status == "awaiting_approval" and not cmd.approval_token:
-                        approval = None
-                        if existing_attempt.approval_id:
-                            approval = await self.uow.approvals.get_for_owner(
-                                existing_attempt.approval_id,
-                                cmd.owner_id,
-                            )
-                        return ExecuteNextActionResult(
-                            task=task,
-                            action=matched_action,
-                            attempt=existing_attempt,
-                            outcome=AgentRunOutcome(status="awaiting_approval"),
-                            approval_request=approval,
-                        )
-                    if existing_attempt.status == "outcome_unknown":
-                        return ExecuteNextActionResult(
-                            task=task,
-                            action=matched_action,
-                            attempt=existing_attempt,
-                            outcome=AgentRunOutcome(
-                                status="outcome_unknown",
-                                error=existing_attempt.error
-                                or "External outcome requires reconciliation before retry",
-                                provider_request_id=existing_attempt.provider_request_id,
-                            ),
-                        )
-                    if existing_attempt.status == "running":
-                        # Process crashed during in-flight execution; never blindly redispatch!
-                        return ExecuteNextActionResult(
-                            task=task,
-                            action=matched_action,
-                            attempt=existing_attempt,
-                            outcome=AgentRunOutcome(
-                                status="outcome_unknown",
-                                error=(
-                                    "Execution attempt is in-flight or was interrupted; "
-                                    "reconcile provider state before retry"
-                                ),
-                                provider_request_id=existing_attempt.provider_request_id,
-                            ),
-                        )
+                            provider_request_id=existing_attempt.provider_request_id,
+                        ),
+                    )
 
             allowed_statuses = (TaskStatus.PLANNED, TaskStatus.IN_PROGRESS)
             if cmd.approval_token:
@@ -255,6 +267,22 @@ class ExecuteNextActionUseCase:
                     None,
                 )
                 if approval is None:
+                    # Match approved requests linked to pending attempts for this action
+                    pending_approval_id = (
+                        existing_attempt.approval_id
+                        if existing_attempt and existing_attempt.status == "awaiting_approval"
+                        else None
+                    )
+                    if pending_approval_id:
+                        approval = await self.uow.approvals.get_for_owner(
+                            pending_approval_id, cmd.owner_id
+                        )
+                        if approval and approval.status != ApprovalStatus.APPROVED:
+                            approval = None
+                    if approval is not None:
+                        action_spec = approval.action
+
+                if approval is None:
                     raise InvalidStateTransitionError(
                         task.status.value,
                         TaskStatus.IN_PROGRESS.value,
@@ -266,15 +294,20 @@ class ExecuteNextActionUseCase:
                 if task.status == TaskStatus.AWAITING_APPROVAL:
                     task.approval_granted()
 
-            attempt = ExecutionAttempt(
-                owner_id=cmd.owner_id,
-                task_id=task.id,
-                action_id=action.id,
-                idempotency_key=idem_key,
-                status="running",
-                approval_id=consumed_approval_id,
-            )
-            action.record_attempt()
+            if existing_attempt is not None and existing_attempt.status == "awaiting_approval":
+                attempt = existing_attempt
+                attempt.status = "running"
+                attempt.approval_id = consumed_approval_id
+            else:
+                attempt = ExecutionAttempt(
+                    owner_id=cmd.owner_id,
+                    task_id=task.id,
+                    action_id=action.id,
+                    idempotency_key=idem_key,
+                    status="running",
+                    approval_id=consumed_approval_id,
+                )
+                action.record_attempt()
 
             await self.uow.attempts.save(attempt)
             self.uow.track_task(task)
@@ -282,16 +315,23 @@ class ExecuteNextActionUseCase:
             await self.uow.commit()
 
         # Phase 2: Dispatch execution outside atomic transaction
+        dispatch_canonical_args = dict(action.tool_args_hint or {"description": action.description})
+        if consumed_approval_id and approval is not None:
+            dispatch_canonical_args["approved_tool"] = approval.action.tool_name
+            dispatch_canonical_args["approved_args"] = approval.action.canonical_args
+
         dispatch_spec = DispatchSpec(
             attempt_id=attempt.id,
             idempotency_key=attempt.idempotency_key,
             tool_name=action.tool_hint or "system_action",
-            canonical_args=action.tool_args_hint or {"description": action.description},
+            canonical_args=dispatch_canonical_args,
             destination_context={
                 "workspace_root": cmd.workspace_root,
                 "owner_id": cmd.owner_id,
                 "task_id": str(task.id),
                 "action_id": str(action.id),
+                "approval_token": cmd.approval_token,
+                "approved": bool(consumed_approval_id),
             },
         )
 
@@ -370,17 +410,25 @@ class ExecuteNextActionUseCase:
             )
 
             if raw_result.status == "awaiting_approval":
-                # Runner halted for approval (e.g. mock runner or interactive agent tool)
+                # Adapter halted for approval (e.g. interactive agent tool)
+                raw_dict = (
+                    raw_result.raw_payload if isinstance(raw_result.raw_payload, dict) else {}
+                )
                 spec = getattr(legacy_outcome, "action_spec", None) or ActionSpecification(
-                    tool_name=action.tool_hint or "system_action",
-                    canonical_args=action.tool_args_hint or {"target": action.description},
+                    tool_name=raw_dict.get("tool_name") or action.tool_hint or "system_action",
+                    canonical_args=(
+                        raw_dict.get("tool_args")
+                        or action.tool_args_hint
+                        or {"target": action.description}
+                    ),
                     task_id=task.id,
                     permission_scope=(
                         "external_http" if action.tool_hint == "webhook_post" else "local_exec"
                     ),
                 )
                 justification = (
-                    getattr(legacy_outcome, "approval_justification", None)
+                    raw_dict.get("justification")
+                    or getattr(legacy_outcome, "approval_justification", None)
                     or f"Action '{action.description}' requires explicit authorization."
                 )
                 approval_req, raw_token = ApprovalRequest.create(
@@ -418,6 +466,15 @@ class ExecuteNextActionUseCase:
                     evidence = legacy_evidence if legacy_evidence.is_verified() else None
                 elif action.tool_hint == "webhook_post":
                     evidence = EvidenceSynthesizer.verify_and_synthesize_webhook_receipt(
+                        task_id=task.id,
+                        action_id=action.id,
+                        attempt_id=attempt.id,
+                        raw_result=raw_result,
+                    )
+                elif action.tool_hint in ("agent_runtime", "agent_loop") or (
+                    isinstance(raw_result.raw_payload, dict) and "run_id" in raw_result.raw_payload
+                ):
+                    evidence = EvidenceSynthesizer.verify_and_synthesize_agent_receipt(
                         task_id=task.id,
                         action_id=action.id,
                         attempt_id=attempt.id,

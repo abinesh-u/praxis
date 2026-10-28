@@ -317,6 +317,7 @@ source = { editable = "services/api" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "praxis-agent-runtime" },
     { name = "praxis-core" },
     { name = "pydantic-settings" },
     { name = "uvicorn", extra = ["standard"] },
@@ -326,6 +327,7 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1.0" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "praxis-agent-runtime", editable = "packages/agent-runtime" },
     { name = "praxis-core", editable = "packages/core" },
     { name = "pydantic-settings", specifier = ">=2.5,<3.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },

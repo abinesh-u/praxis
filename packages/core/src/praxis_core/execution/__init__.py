@@ -1,5 +1,6 @@
 """Execution engine core policies, synthesizers, and domain helpers."""
 
+from praxis_core.execution.dispatcher import RoutingActionDispatcher
 from praxis_core.execution.policy import (
     CONSEQUENTIAL_KEYWORDS,
     ActionRiskAssessment,
@@ -12,4 +13,5 @@ __all__ = [
     "ActionRiskPolicy",
     "CONSEQUENTIAL_KEYWORDS",
     "EvidenceSynthesizer",
+    "RoutingActionDispatcher",
 ]

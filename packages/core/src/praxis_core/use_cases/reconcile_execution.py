@@ -111,6 +111,23 @@ class ReconcileExecutionUseCase:
                     and legacy_outcome.evidence.is_verified()
                 ):
                     evidence: Evidence | None = legacy_outcome.evidence
+                elif action.tool_hint == "webhook_post":
+                    evidence = EvidenceSynthesizer.verify_and_synthesize_webhook_receipt(
+                        task_id=task.id,
+                        action_id=action.id,
+                        attempt_id=attempt.id,
+                        raw_result=raw_reconcile,
+                    )
+                elif action.tool_hint in ("agent_runtime", "agent_loop") or (
+                    isinstance(raw_reconcile.raw_payload, dict)
+                    and "run_id" in raw_reconcile.raw_payload
+                ):
+                    evidence = EvidenceSynthesizer.verify_and_synthesize_agent_receipt(
+                        task_id=task.id,
+                        action_id=action.id,
+                        attempt_id=attempt.id,
+                        raw_result=raw_reconcile,
+                    )
                 else:
                     evidence = EvidenceSynthesizer.verify_and_synthesize_webhook_receipt(
                         task_id=task.id,

@@ -439,6 +439,10 @@ sequence is:
   formatter to bound prompt depth.
 - **Checkpointing and Recovery**: Preserves execution state to recover from
   interruptions without repeating external side effects.
+- **Untrusted Candidate Skills**: Procedural skills extracted from runs are
+  untrusted candidates across the validation seam. Untrusted task content and
+  tool outputs must never be converted into privileged, active prompt instructions
+  without independent validation.
 
 ### M6 acceptance criteria
 

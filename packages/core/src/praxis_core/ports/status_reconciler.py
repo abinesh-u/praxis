@@ -7,7 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-ReconcileStatus = Literal["completed", "failed", "outcome_unknown"]
+ReconcileStatus = Literal["completed", "failed", "outcome_unknown", "awaiting_approval"]
 
 
 class RawReconcileResult(BaseModel):

@@ -7,7 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-DispatchStatus = Literal["completed", "failed", "outcome_unknown"]
+DispatchStatus = Literal["completed", "failed", "outcome_unknown", "awaiting_approval"]
 
 
 class DispatchSpec(BaseModel):
