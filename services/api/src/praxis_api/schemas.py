@@ -342,3 +342,60 @@ class ApprovalDecisionResponse(ApiModel):
             approval=ApprovalResponse.from_entity(result.approval),
             task=TaskResponse.from_entity(result.task),
         )
+
+
+class SkillReviewAuditResponse(ApiModel):
+    decision: Literal["promoted", "rejected"]
+    operator_id: str
+    timestamp: str
+    notes: str | None = None
+
+
+class SkillResponse(ApiModel):
+    id: str | None = None
+    name: str
+    description: str
+    triggers: list[str] = Field(default_factory=list)
+    required_tools: list[str] = Field(default_factory=list)
+    instructions: str = ""
+    status: Literal["candidate", "validated", "rejected"]
+    owner_id: str | None = None
+    attempt_id: str | None = None
+    provenance: dict[str, Any] | None = None
+    review_audit: SkillReviewAuditResponse | None = None
+    validation_notes: str | None = None
+
+    @classmethod
+    def from_entity(cls, skill: Any) -> SkillResponse:
+        review = (
+            SkillReviewAuditResponse(**skill.review_audit.model_dump())
+            if getattr(skill, "review_audit", None)
+            else None
+        )
+        return cls(
+            id=getattr(skill, "id", None),
+            name=skill.name,
+            description=skill.description,
+            triggers=skill.triggers,
+            required_tools=skill.required_tools,
+            instructions=skill.instructions,
+            status=skill.status,
+            owner_id=skill.owner_id,
+            attempt_id=skill.attempt_id,
+            provenance=skill.provenance,
+            review_audit=review,
+            validation_notes=skill.validation_notes,
+        )
+
+
+class SkillListResponse(ApiModel):
+    skills: list[SkillResponse]
+    total: int
+
+
+class PromoteSkillRequest(ApiModel):
+    notes: Annotated[str | None, Field(max_length=1000)] = None
+
+
+class RejectSkillRequest(ApiModel):
+    reason: Annotated[str, Field(min_length=1, max_length=1000)]

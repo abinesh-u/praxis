@@ -133,6 +133,43 @@ export interface ExecutionResponse {
   approval_token: string | null;
 }
 
+export type SkillStatus = "candidate" | "validated" | "rejected";
+
+export interface SkillReviewAuditResponse {
+  decision: "promoted" | "rejected";
+  operator_id: string;
+  timestamp: string;
+  notes?: string | null;
+}
+
+export interface SkillResponse {
+  id?: string | null;
+  name: string;
+  description: string;
+  triggers: string[];
+  required_tools: string[];
+  instructions: string;
+  status: SkillStatus;
+  owner_id?: string | null;
+  attempt_id?: string | null;
+  provenance?: Record<string, unknown> | null;
+  review_audit?: SkillReviewAuditResponse | null;
+  validation_notes?: string | null;
+}
+
+export interface SkillListResponse {
+  skills: SkillResponse[];
+  total: number;
+}
+
+export interface PromoteSkillRequest {
+  notes?: string | null;
+}
+
+export interface RejectSkillRequest {
+  reason: string;
+}
+
 export interface TransportErrorDetail {
   message: string;
   code?: string;
@@ -385,6 +422,36 @@ export const clientAdapter = {
         decision: params.decision,
         rejection_reason: params.rejectionReason,
         fatal_rejection: params.fatalRejection || false,
+      }),
+    });
+  },
+
+  async listSkills(status?: SkillStatus, ownerId?: string): Promise<SkillListResponse> {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (ownerId) params.set("owner_id", ownerId);
+    const query = params.toString() ? `?${params.toString()}` : "";
+    return requestJson<SkillListResponse>(`/skills${query}`);
+  },
+
+  async getSkill(skillName: string): Promise<SkillResponse> {
+    return requestJson<SkillResponse>(`/skills/${encodeURIComponent(skillName)}`);
+  },
+
+  async promoteSkill(params: { skillName: string; notes?: string }): Promise<SkillResponse> {
+    return requestJson<SkillResponse>(`/skills/${encodeURIComponent(params.skillName)}/promote`, {
+      method: "POST",
+      body: JSON.stringify({
+        notes: params.notes || null,
+      }),
+    });
+  },
+
+  async rejectSkill(params: { skillName: string; reason: string }): Promise<SkillResponse> {
+    return requestJson<SkillResponse>(`/skills/${encodeURIComponent(params.skillName)}/reject`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: params.reason,
       }),
     });
   },

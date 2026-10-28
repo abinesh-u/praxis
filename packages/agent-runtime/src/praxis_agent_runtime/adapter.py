@@ -97,7 +97,10 @@ class AgentActionDispatcher(ActionDispatcher, StatusReconciler):
         # Skill selection locality: match skills from disk to bound prompt depth
         skill_guides: list[str] = []
         if self._skill_store is not None:
-            available_skills = self._skill_store.load_all()
+            owner_id = (
+                spec.destination_context.get("owner_id") if spec.destination_context else None
+            )
+            available_skills = self._skill_store.load_all(caller_owner_id=owner_id)
             matched = match_skills(str(goal), available_skills, max_results=3)
             skill_guides = [f"### Skill: {s.name}\n{s.instructions}" for s in matched]
 

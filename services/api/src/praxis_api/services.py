@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from praxis_core.ports.unit_of_work import UnitOfWork
 from praxis_core.use_cases import (
@@ -38,3 +39,5 @@ class ApiServices:
     make_execute_next_action: Callable[[], ExecuteNextActionUseCase]
     make_reconcile_execution: Callable[[], ReconcileExecutionUseCase]
     make_clarify_commitment: Callable[[], ClarifyCommitmentUseCase] | None = None
+    skill_store: Any | None = None
+    tool_registry: Any | None = None

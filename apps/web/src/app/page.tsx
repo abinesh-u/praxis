@@ -1,11 +1,12 @@
 "use client";
 
 import * as React from "react";
-import { Sparkles, ShieldCheck, ListOrdered, User, Key, Lock, Check } from "lucide-react";
+import { Sparkles, ShieldCheck, ListOrdered, BookOpen, User, Key, Lock, Check } from "lucide-react";
 import { CaptureBox } from "@/components/capture-box";
 import { TodayView } from "@/components/today-view";
 import { ApprovalReview } from "@/components/approval-review";
 import { TaskDirectory } from "@/components/task-directory";
+import { SkillsLibrary } from "@/components/skills-library";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -19,7 +20,7 @@ import {
 } from "@/components/ui/dialog";
 import { clientAdapter } from "@/lib/api";
 
-type TabValue = "today" | "approvals" | "directory";
+type TabValue = "today" | "approvals" | "directory" | "skills";
 
 /**
  * Operational dashboard page module.
@@ -72,7 +73,7 @@ export default function HomePage() {
         return;
       }
 
-      // Tab switcher shortcuts 1, 2, 3 only outside editable elements
+      // Tab switcher shortcuts 1, 2, 3, 4 only outside editable elements
       if (!isEditing && !e.metaKey && !e.ctrlKey && !e.altKey) {
         if (e.key === "1") {
           setActiveTab("today");
@@ -80,6 +81,8 @@ export default function HomePage() {
           setActiveTab("approvals");
         } else if (e.key === "3") {
           setActiveTab("directory");
+        } else if (e.key === "4") {
+          setActiveTab("skills");
         }
       }
     }
@@ -207,6 +210,10 @@ export default function HomePage() {
                 <ListOrdered className="h-3.5 w-3.5" />
                 <span>All Commitments</span>
               </TabsTrigger>
+              <TabsTrigger value="skills" className="flex items-center gap-1.5">
+                <BookOpen className="h-3.5 w-3.5" />
+                <span>Skills Library</span>
+              </TabsTrigger>
             </TabsList>
 
             <TabsContent value="today" className="pt-2">
@@ -230,6 +237,13 @@ export default function HomePage() {
                 ownerId={ownerId}
                 refreshTrigger={refreshTrigger}
                 onRefreshNeeded={triggerRefresh}
+              />
+            </TabsContent>
+
+            <TabsContent value="skills" className="pt-2">
+              <SkillsLibrary
+                ownerId={ownerId}
+                onRefresh={triggerRefresh}
               />
             </TabsContent>
           </Tabs>

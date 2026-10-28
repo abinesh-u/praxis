@@ -1,11 +1,13 @@
 """Thin FastAPI routes over Praxis core use cases."""
 
+import hashlib
 from collections.abc import Callable
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from praxis_agent_runtime.skills.models import InvalidStateTransitionError
 from praxis_core.entities.evidence import Evidence
 from praxis_core.errors import DomainError, EntityNotFoundError, IntakeValidationError
 from praxis_core.use_cases import (
@@ -29,7 +31,11 @@ from praxis_api.schemas import (
     CompleteTaskRequest,
     ExecuteTaskRequest,
     ExecutionResponse,
+    PromoteSkillRequest,
     ReconcileTaskRequest,
+    RejectSkillRequest,
+    SkillListResponse,
+    SkillResponse,
     TaskListResponse,
     TaskResponse,
     TodayResponse,
@@ -301,5 +307,262 @@ def create_api_router(
             return ApprovalDecisionResponse.from_result(result)
         except DomainError as error:
             raise _domain_http_error(error) from error
+
+    @router.get("/skills", response_model=SkillListResponse, tags=["skills"])
+    async def list_skills(
+        request: Request,
+        services: Annotated[ApiServices, Depends(get_services)],
+        status_filter: Annotated[
+            Literal["candidate", "validated", "rejected"] | None,
+            Query(alias="status"),
+        ] = None,
+        owner_id: Annotated[str | None, Query(max_length=256)] = None,
+    ) -> SkillListResponse:
+        identity = identity_from_app_state(request)
+        operator_id = identity.resolve_operator(request, claimed_owner=owner_id)
+
+        skill_store = services.skill_store
+        if skill_store is None:
+            return SkillListResponse(skills=[], total=0)
+
+        skills = skill_store.load_all(include_candidates=True, caller_owner_id=operator_id)
+        if status_filter is not None:
+            skills = [s for s in skills if s.status == status_filter]
+
+        return SkillListResponse(
+            skills=[SkillResponse.from_entity(s) for s in skills],
+            total=len(skills),
+        )
+
+    @router.get("/skills/{skill_name}", response_model=SkillResponse, tags=["skills"])
+    async def get_skill(
+        skill_name: str,
+        request: Request,
+        services: Annotated[ApiServices, Depends(get_services)],
+    ) -> SkillResponse:
+        identity = identity_from_app_state(request)
+        operator_id = identity.resolve_operator(request)
+
+        skill_store = services.skill_store
+        if skill_store is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Skill '{skill_name}' not found",
+            )
+
+        skill = skill_store.get(skill_name, caller_owner_id=operator_id)
+        if skill is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Skill '{skill_name}' not found",
+            )
+
+        return SkillResponse.from_entity(skill)
+
+    @router.post("/skills/{skill_name}/promote", response_model=SkillResponse, tags=["skills"])
+    async def promote_skill(
+        skill_name: str,
+        body: PromoteSkillRequest,
+        request: Request,
+        services: Annotated[ApiServices, Depends(get_services)],
+    ) -> SkillResponse:
+        identity = identity_from_app_state(request)
+        operator_id = identity.resolve_operator(request)
+
+        skill_store = services.skill_store
+        if skill_store is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="SkillStore is not configured in this runtime",
+            )
+
+        skill = skill_store.get(skill_name, caller_owner_id=operator_id)
+        if skill is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Skill '{skill_name}' not found",
+            )
+
+        if skill.is_validated:
+            return SkillResponse.from_entity(skill)
+
+        if skill.is_rejected:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Candidate skill '{skill_name}' has been rejected and cannot be promoted",
+            )
+
+        if not skill.is_candidate:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Skill '{skill_name}' is not in candidate status",
+            )
+
+        if skill.owner_id is not None and skill.owner_id != operator_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Skill '{skill_name}' not found",
+            )
+
+        attempt_id_str = skill.attempt_id
+        if not attempt_id_str:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Candidate skill lacks required execution attempt provenance",
+            )
+
+        try:
+            attempt_uuid = UUID(attempt_id_str)
+        except ValueError as err:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Candidate skill contains invalid attempt identifier format",
+            ) from err
+
+        async with services.make_uow() as uow:
+            attempt = await uow.attempts.get(attempt_uuid)
+
+        if attempt is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Source execution attempt not found in authoritative records",
+            )
+
+        if attempt.status != "completed":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Source execution attempt is not completed ({attempt.status})",
+            )
+
+        if not attempt.evidence_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Source execution attempt lacks verified machine evidence receipt",
+            )
+
+        expected_hash = hashlib.sha256(f"{attempt.id}:{attempt.evidence_id}".encode()).hexdigest()[
+            :16
+        ]
+        prov_hash = (
+            skill.provenance.get("evidence_hash") if isinstance(skill.provenance, dict) else None
+        )
+
+        if (
+            prov_hash
+            and prov_hash != expected_hash
+            and prov_hash not in (str(attempt.evidence_id), str(attempt.id))
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Evidence receipt hash mismatch with authoritative execution record",
+            )
+
+        registry = services.tool_registry
+        if registry is not None and skill.required_tools:
+            registered_tools = getattr(registry, "_tools", {})
+            for req_tool in skill.required_tools:
+                tool_exists = req_tool in registered_tools
+                if not tool_exists and hasattr(registry, "get"):
+                    try:
+                        tool_exists = registry.get(req_tool) is not None
+                    except Exception:
+                        tool_exists = False
+                if not tool_exists:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=f"Skill requires unknown or disallowed tool: '{req_tool}'",
+                    )
+
+        if len(skill.instructions) > 20_000:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Skill instructions exceed maximum allowed size (20,000 characters)",
+            )
+        if len(skill.description) > 500:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Skill description exceeds maximum allowed size (500 characters)",
+            )
+        if len(skill.triggers) > 30:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Skill triggers exceed maximum allowed count (30)",
+            )
+
+        forbidden_tags = (
+            "<system>",
+            "</system>",
+            "<tool_call>",
+            "</tool_call>",
+            "<control>",
+            "</control>",
+        )
+        for tag in forbidden_tags:
+            if tag in skill.instructions:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Skill instructions violate safety constraints: disallowed tag '{tag}'",
+                )
+
+        try:
+            promoted = skill_store.promote_candidate(
+                name=skill.name,
+                validator_identity=operator_id,
+                notes=body.notes,
+                caller_owner_id=operator_id,
+            )
+            return SkillResponse.from_entity(promoted)
+        except InvalidStateTransitionError as err:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(err)) from err
+
+    @router.post("/skills/{skill_name}/reject", response_model=SkillResponse, tags=["skills"])
+    async def reject_skill(
+        skill_name: str,
+        body: RejectSkillRequest,
+        request: Request,
+        services: Annotated[ApiServices, Depends(get_services)],
+    ) -> SkillResponse:
+        identity = identity_from_app_state(request)
+        operator_id = identity.resolve_operator(request)
+
+        skill_store = services.skill_store
+        if skill_store is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="SkillStore is not configured in this runtime",
+            )
+
+        skill = skill_store.get(skill_name, caller_owner_id=operator_id)
+        if skill is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Skill '{skill_name}' not found",
+            )
+
+        if skill.is_validated:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Validated skill '{skill_name}' cannot be rejected in this version",
+            )
+
+        if skill.is_rejected:
+            return SkillResponse.from_entity(skill)
+
+        if not skill.is_candidate:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Skill '{skill_name}' is not in candidate status",
+            )
+
+        try:
+            rejected = skill_store.reject_candidate(
+                name=skill.name,
+                reason=body.reason,
+                operator_id=operator_id,
+                caller_owner_id=operator_id,
+            )
+            return SkillResponse.from_entity(rejected)
+        except InvalidStateTransitionError as err:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(err)) from err
 
     return router

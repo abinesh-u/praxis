@@ -33,7 +33,9 @@ The following table documents all environment variables recognized across the co
 
 | Variable | Target Subsystem | Default | Description |
 | --- | --- | --- | --- |
-| `PRAXIS_AUTH_TOKENS` | `services/api` | `""` (Open local dev) | Comma-separated `tenant=bearer_token` pairs (e.g. `alice=sec_123,bob=sec_456`). When non-empty, all endpoints enforce Bearer authentication. |
+| `PRAXIS_AUTH_TOKENS` | `services/api` | `""` (Open local dev) | Comma-separated `tenant=bearer_token` pairs (e.g. `alice=sec_123,bob=sec_456`). When non-empty or in production, all endpoints enforce Bearer authentication. |
+| `PRAXIS_ENV` | `services/api` | `development` | Environment mode (`production`, `development`, `test`). In non-development environments, skill management routes strictly fail closed if credentials are absent. |
+| `PRAXIS_SKILLS_DIR` | `services/api` | `~/.praxis/skills` | Directory storing procedural knowledge markdown files with YAML frontmatter. Preserves file locality and atomic persistence. |
 | `DATABASE_URL` | `services/api` | `sqlite:///praxis.db` | Path or URI to the SQLite database file. Supports absolute paths (e.g. `sqlite:////var/data/praxis.db`). |
 | `PRAXIS_API_URL` | `apps/web` | `http://127.0.0.1:8000` | Target backend host address used by the Next.js `/api/backend/:path*` reverse proxy rewrite rule. |
 | `PRAXIS_WEBHOOK_ALLOWED_HOSTS` | `services/api` | `""` (Blocks all outbound) | Comma-separated list of permitted outbound webhook destinations (e.g. `api.stripe.com,hooks.slack.com`). Prevents unauthorized network egress. |
@@ -61,6 +63,10 @@ All routes enforce strict owner isolation through `IdentityProvider.resolve`. Wh
 | `POST` | `/tasks/{id}/reconcile` | Perform strictly read-only status observation for uncertain attempts. |
 | `GET` | `/approvals` | List pending consequential action authorization requests. |
 | `POST` | `/approvals/{id}/decision` | Submit approve or reject decision for an authorization request. |
+| `GET` | `/skills` | List procedural skills filtered by status (`candidate`, `validated`, `rejected`). |
+| `GET` | `/skills/{name}` | Inspect procedural skill metadata, instructions, and review audit. |
+| `POST` | `/skills/{name}/promote` | Multi-layer validation gate and promotion of candidate to active status. |
+| `POST` | `/skills/{name}/reject` | Terminal rejection and archiving of candidate skill with reason. |
 
 ---
 
@@ -123,3 +129,9 @@ If an unclean shutdown occurs during external tool execution:
 3. Any in-flight execution attempts remain in status `outcome_unknown`.
 4. Operators or the user navigate to the web dashboard and click **Reconcile Status**.
 5. The status reconciler issues a safe, read-only status query against the provider without re-dispatching the original action.
+
+### Multi-Worker Concurrency & Procedural Skill Persistence
+When deploying with multiple Uvicorn workers (`--workers N`):
+- **SQLite Concurrency**: SQLite in WAL mode handles multiple worker processes safely with optimistic revision locking and busy timeouts.
+- **Skill Storage Atomicity**: `SkillStore` writes to unique temporary files (`tempfile.NamedTemporaryFile`) and performs atomic renames (`os.replace`) within the same directory locality. POSIX guarantees atomic file replacement across worker processes without partial reads.
+- **Review-Audit Recovery**: In the event of worker or process restarts, new workers parse YAML frontmatter directly from disk, completely reconstructing `status`, `review_audit` decisions, and immutable `provenance` without data corruption.

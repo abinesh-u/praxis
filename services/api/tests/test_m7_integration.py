@@ -210,7 +210,9 @@ async def test_m7_successful_execution_distills_quarantined_candidate(m7_test_en
         notes="Validated safe pipeline execution",
     )
     assert promoted.is_validated is True
-    assert len(skill_store.load_all()) == 1
-    matched = match_skills("deploy pipeline", skill_store.load_all())
+    # Tenant-scoped lookup sees promoted skill; other tenant isolates private skill
+    assert len(skill_store.load_all(owner_id=owner)) == 1
+    assert len(skill_store.load_all(owner_id="other_tenant")) == 0
+    matched = match_skills("deploy pipeline", skill_store.load_all(owner_id=owner))
     assert len(matched) == 1
     assert matched[0].name == candidate.name

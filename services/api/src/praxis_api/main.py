@@ -35,6 +35,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
     )
     router.register_dispatcher("webhook_post", webhook_runner, webhook_runner)
     skill_learner = None
+    skill_store = None
+    registry = None
 
     try:
         from praxis_agent_runtime.adapter import AgentActionDispatcher
@@ -107,6 +109,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
             make_clarify_commitment=lambda: ClarifyCommitmentUseCase(
                 uow=make_uow(), extractor=extractor
             ),
+            skill_store=skill_store,
+            tool_registry=registry,
         )
 
     application = FastAPI(

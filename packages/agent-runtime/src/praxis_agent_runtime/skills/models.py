@@ -1,6 +1,6 @@
 """Procedural skill data module defining interfaces for persistent instructions.
 
-Includes candidate validation and isolation perimeters across the seam.
+Includes candidate validation, review audit, and isolation perimeters across the seam.
 """
 
 from __future__ import annotations
@@ -12,9 +12,31 @@ from pydantic import BaseModel, Field
 SkillStatus = Literal["candidate", "validated", "rejected"]
 
 
+class ReviewAudit(BaseModel):
+    """Audit record documenting an operator's explicit review decision."""
+
+    decision: Literal["promoted", "rejected"]
+    operator_id: str
+    timestamp: str
+    notes: str | None = None
+
+
+class SkillCollisionError(ValueError):
+    """Raised when two distinct skill names collide on the same storage slug."""
+
+
+class InvalidStateTransitionError(ValueError):
+    """Raised when attempting an invalid skill lifecycle state transition."""
+
+
+class SkillSecurityError(ValueError):
+    """Raised when a skill violates storage containment or safety policies."""
+
+
 class Skill(BaseModel):
     """A procedural skill module: instructions leveraged across agent execution depth."""
 
+    id: str | None = None
     name: str
     description: str
     triggers: list[str] = Field(default_factory=list)
@@ -22,6 +44,7 @@ class Skill(BaseModel):
     instructions: str = ""
     status: SkillStatus = "validated"
     provenance: dict[str, Any] | None = None
+    review_audit: ReviewAudit | None = None
     validation_notes: str | None = None
 
     @property
@@ -33,6 +56,11 @@ class Skill(BaseModel):
     def is_candidate(self) -> bool:
         """Return True if this skill is an untrusted candidate pending validation."""
         return self.status == "candidate"
+
+    @property
+    def is_rejected(self) -> bool:
+        """Return True if this skill has been explicitly rejected/archived."""
+        return self.status == "rejected"
 
     @property
     def owner_id(self) -> str | None:
