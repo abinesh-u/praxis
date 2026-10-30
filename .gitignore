@@ -39,5 +39,6 @@ pnpm-debug.log*
 
 # Local Databases / Persistent storage
 .data/
+.praxis/
 *.sqlite3
 *.db
