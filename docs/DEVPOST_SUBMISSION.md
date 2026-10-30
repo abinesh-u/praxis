@@ -7,6 +7,7 @@
 **License:** MIT License (visible in repo root `LICENSE`)
 **Demo Video:** [https://youtu.be/PLACEHOLDER_DEMO_URL](https://youtu.be/PLACEHOLDER_DEMO_URL) (Public YouTube, Duration: 2m 50s, English)
 **Eligible Model:** `nvidia/Nemotron-3_5-Lightning` via **Nebius Token Factory** (`https://api.tokenfactory.nebius.com/v1`)
+**Bonus Award Targeted:** **Best Use of Tavily ($3,000 USD)** via functional runtime call to Tavily AI Search API
 
 ---
 
@@ -156,15 +157,17 @@ uv run python scripts/demo_walkthrough.py --seed
 
 ---
 
-## 💬 Nebius Platform Feedback (Evaluation for Feedback Award)
+## 💬 Nebius & Partner Platform Feedback (Evaluation for Feedback Award)
 1. **Token Factory API Performance & Reliability:**
    - **Low Latency:** Time-to-first-token (TTFT) on `nvidia/Nemotron-3_5-Lightning` was exceptionally fast, averaging under 1.0 second round-trip from international endpoints.
    - **Standard Compatibility:** Full OpenAI API spec compatibility allowed us to seamlessly route requests through standard HTTP client libraries without proprietary SDK dependencies.
 2. **NVIDIA Nemotron 3.5 Lightning Capabilities:**
    - **Structured JSON Fidelity:** The model consistently produced valid JSON schemas matching our extraction contracts without hallucinating extraneous markdown fences or commentary when instructed.
    - **Temporal Reasoning:** Relative deadline resolution against provided ISO-8601 reference timestamps was highly reliable.
-3. **Actionable Suggestions for Future Platform Capabilities:**
-   - **Native JSON Schema Enforcement:** Adding native `response_format: {"type": "json_schema", "schema": {...}}` support at the provider level would eliminate post-generation JSON extraction regexes.
+3. **Tavily AI Search API Integration:**
+   - **Agent-Ready Grounding:** Tavily's concise answer synthesis and structured search results enabled our personal agent to verify external facts without token-heavy web scraping. The clean JSON payload format was effortless to parse and serialize into machine evidence receipts.
+4. **Actionable Suggestions for Future Platform Capabilities:**
+   - **Native JSON Schema Enforcement:** Adding native `response_format: {"type": "json_schema", "schema": {...}}` support at the Token Factory level would eliminate post-generation JSON extraction regexes.
    - **Token Factory Tracing & Metrics Dashboard:** A built-in web console for visualizing per-request latency percentiles (p50, p95, p99), prompt/completion token usage, and rate-limit headroom.
    - **Serverless Job Triggers from Token Factory:** Native webhooks or job callbacks from Nebius Token Factory into Nebius Serverless compute when multi-step agent completions finish.
 
@@ -175,6 +178,7 @@ uv run python scripts/demo_walkthrough.py --seed
 - `fastapi`
 - `nebius-token-factory`
 - `nvidia-nemotron`
+- `tavily`
 - `nextjs`
 - `typescript`
 - `tailwind-css`

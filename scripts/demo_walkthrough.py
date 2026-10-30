@@ -82,7 +82,21 @@ def check_status() -> bool:
             "No API key found in .env (offline fallback active)"
         )
 
-    # 2. Local Backend API
+    # 2. Tavily Search API
+    tavily_key = os.getenv("TAVILY_API_KEY")
+    if tavily_key:
+        masked_tvly = tavily_key[:4] + "..." + tavily_key[-4:] if len(tavily_key) > 8 else "***"
+        console.print(
+            f"  ✔ [bold green]Tavily AI Search:[/bold green] Online ({masked_tvly}) — "
+            "Ready for external web grounding"
+        )
+    else:
+        console.print(
+            "  ℹ [bold yellow]Tavily AI Search:[/bold yellow] "
+            "Offline preview active (Set TAVILY_API_KEY for live web search)"
+        )
+
+    # 3. Local Backend API
     try:
         resp = httpx.get(f"{API_URL}/health", timeout=3.0)
         if resp.status_code == 200:

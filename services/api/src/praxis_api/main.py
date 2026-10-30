@@ -42,6 +42,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         from praxis_agent_runtime.adapter import AgentActionDispatcher
         from praxis_agent_runtime.learning.learning_loop import AgentSkillLearner
         from praxis_agent_runtime.skills.skill_store import SkillStore
+        from praxis_agent_runtime.tools.builtin.tavily_search import TavilySearchTool
         from praxis_agent_runtime.tools.builtin.workspace_fs import (
             FsListDirTool,
             FsReadFileTool,
@@ -55,6 +56,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         registry.register(FsReadFileTool(ws_root))
         registry.register(FsWriteFileTool(ws_root))
         registry.register(FsListDirTool(ws_root))
+        registry.register(TavilySearchTool())
         skill_store = SkillStore(skills_dir)
 
         class DefaultLLMProvider:

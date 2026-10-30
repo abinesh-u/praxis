@@ -96,4 +96,5 @@ All Devpost requirements must be satisfied before the deadline:
 
 - **Personal AI Track Winner:** NVIDIA Jetson Orin Nano
 - **Overall Awards:** Grand Prize ($20,000 USD), 2nd Place ($10,000 USD), 3rd Place ($6,000 USD)
-- **Bonus Award:** Most Valuable Feedback ($100 USD + NVIDIA swag pack)
+- **Bonus Award 1:** Best Use of Tavily ($3,000 USD)
+- **Bonus Award 2:** Most Valuable Feedback ($100 USD + NVIDIA swag pack)
