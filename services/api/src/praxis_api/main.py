@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import FastAPI
@@ -16,10 +17,13 @@ from praxis_core.use_cases import (
 )
 
 from praxis_api.auth import IdentityProvider
+from praxis_api.llm_provider import NebiusLLMProvider
 from praxis_api.persistence import SQLiteUnitOfWork
 from praxis_api.routes import create_api_router
 from praxis_api.services import ApiServices
 from praxis_api.webhook_runner import WebhookRunner
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(database_url: str | None = None) -> FastAPI:
@@ -59,25 +63,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
         registry.register(TavilySearchTool())
         skill_store = SkillStore(skills_dir)
 
-        class DefaultLLMProvider:
-            """LLM provider adapter leveraging configured model router."""
-
-            def chat(self, messages: list[dict[str, str]]) -> str:
-                api_key = os.getenv("NEBIUS_API_KEY", "")
-                if not api_key:
-                    return "No API key configured for agent runtime."
-                from praxis_core.models.providers.base import NormalizedCompletionRequest
-                from praxis_core.models.providers.nebius import NebiusTokenFactoryAdapter
-                from praxis_core.models.registry import ModelRegistry
-                from praxis_core.models.router import ModelRouter
-
-                model_router = ModelRouter(registry=ModelRegistry())
-                cfg = model_router.resolve_model_for_profile("routine_tasks")
-                model_adapter = NebiusTokenFactoryAdapter(config=cfg, api_key=api_key)
-                return model_adapter.invoke(NormalizedCompletionRequest(messages=messages)).text
-
         agent_dispatcher = AgentActionDispatcher(
-            llm=DefaultLLMProvider(),
+            llm=NebiusLLMProvider(),
             tool_registry=registry,
             skill_store=skill_store,
             workspace_root=ws_root,
@@ -86,7 +73,10 @@ def create_app(database_url: str | None = None) -> FastAPI:
         router.register_dispatcher("agent_loop", agent_dispatcher, agent_dispatcher)
         skill_learner = AgentSkillLearner(skill_store=skill_store)
     except Exception:
-        pass
+        logger.warning(
+            "Agent runtime unavailable — agent_runtime/agent_loop dispatch disabled.",
+            exc_info=True,
+        )
 
     runner = router
 
